@@ -1,46 +1,31 @@
-/* App-wide styling */
+/* Minimal styling for readability */
 body {
-    background-color: #0f1116;
-    color: #ffffff;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    margin: 20px;
+    margin: 12px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    color: #111;
+    background: #fff;
 }
 
-#hero {
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
+/* Container for each event/result */
+.item {
+    border: 1px solid #e6e6e6;
+    padding: 8px;
+    margin: 8px 0;
+    border-radius: 6px;
+    background: #fafafa;
 }
 
-#links {
-    width: 400px;
-    text-align: left;
-    font-size: x-large;
-    color: white;
-    display: flex;
-    flex-direction: column;
+/* Monospace for raw/protobuf bytes and small labels */
+.mono, pre, code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Segoe UI Mono", monospace;
+    font-size: 0.9em;
 }
 
-#links a {
-    color: white;
-    text-decoration: none;
-    margin-top: 20px;
-    margin: 10px 0px;
-    border: white 1px solid;
-    border-radius: 5px;
-    padding: 10px;
+.muted {
+    color: #666;
+    font-size: 0.9em;
 }
 
-#links a:hover {
-    background-color: #1f1f1f;
-    cursor: pointer;
-}
-
-#header {
-    max-width: 1200px;
-}
-
-
+/* Tiny helpers */
+.gap { margin-left: 12px; }
 

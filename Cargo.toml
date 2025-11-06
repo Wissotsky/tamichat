@@ -8,9 +8,17 @@ edition = "2021"
 
 [dependencies]
 dioxus = { version = "0.7.0", features = [] }
+prost = "0.14.1"
+reqwest = "0.12.24"
+base64 = "0.22"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+tracing = "0.1.41"
 
 [features]
 default = ["web"]
 web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
+
+[build-dependencies]
+prost-build = "0.14.1"
