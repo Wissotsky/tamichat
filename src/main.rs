@@ -58,6 +58,7 @@ fn create_post(
     process: &Process,
     logical_clock: u64,
     content: String,
+    topic: Option<String>,
 ) -> Result<SignedEvent, Box<dyn std::error::Error>> {
     // Create the Post content
     let post = Post {
@@ -70,6 +71,16 @@ fn create_post(
     
     // Get current unix milliseconds using chrono (wasm-compatible)
     let unix_milliseconds = Utc::now().timestamp_millis() as u64;
+    
+    // Create references for topic if provided
+    let references = if let Some(topic_name) = topic {
+        vec![Reference {
+            reference_type: 3, // Byte reference type for topics
+            reference: topic_name.as_bytes().to_vec(),
+        }]
+    } else {
+        vec![]
+    };
     
     // Create the Event
     let event = tamichat::protocol::Event {
@@ -86,7 +97,7 @@ fn create_post(
         }),
         lww_element_set: None,
         lww_element: None,
-        references: vec![],
+        references,
         unix_milliseconds: Some(unix_milliseconds),
     };
     
@@ -726,6 +737,7 @@ async fn post_events_to_server(signed_event: SignedEvent) -> Result<(), Box<dyn 
 fn CreatePostPage() -> Element {
     let mut identity = use_signal(|| None::<(SigningKey, PublicKey, Process)>);
     let mut post_content = use_signal(|| String::new());
+    let mut topic = use_signal(|| String::new());
     let mut logical_clock = use_signal(|| 1u64);
     let mut status_message = use_signal(|| None::<String>);
     let mut created_post = use_signal(|| None::<SignedEvent>);
@@ -753,12 +765,14 @@ fn CreatePostPage() -> Element {
             let public_key_clone = public_key.clone();
             let process_clone = process.clone();
             let current_clock = logical_clock();
+            let topic_value = topic();
+            let topic_opt = if topic_value.is_empty() { None } else { Some(topic_value) };
             
             spawn(async move {
                 *is_posting.write() = true;
                 *status_message.write() = Some("Creating and posting event...".to_string());
                 
-                match create_post(&signing_key_clone, &public_key_clone, &process_clone, current_clock, content) {
+                match create_post(&signing_key_clone, &public_key_clone, &process_clone, current_clock, content, topic_opt) {
                     Ok(signed_event) => {
                         // Try to post to server
                         match post_events_to_server(signed_event.clone()).await {
@@ -767,6 +781,7 @@ fn CreatePostPage() -> Element {
                                 *status_message.write() = Some(format!("Post created and published successfully! Logical clock: {}", current_clock));
                                 *logical_clock.write() = current_clock + 1;
                                 *post_content.write() = String::new();
+                                *topic.write() = String::new();
                             }
                             Err(e) => {
                                 *status_message.write() = Some(format!("Error posting to server: {}", e));
@@ -838,11 +853,37 @@ fn CreatePostPage() -> Element {
                     style: "margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px;",
                     h2 { "Create a Post" }
                     
-                    textarea {
-                        value: "{post_content}",
-                        oninput: move |evt| *post_content.write() = evt.value(),
-                        placeholder: "What's on your mind?",
-                        style: "width: 100%; min-height: 150px; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px; font-family: inherit;",
+                    div {
+                        style: "margin-bottom: 10px;",
+                        label {
+                            style: "display: block; margin-bottom: 5px; font-weight: bold;",
+                            "Topic (optional)"
+                        }
+                        input {
+                            r#type: "text",
+                            value: "{topic}",
+                            oninput: move |evt| *topic.write() = evt.value(),
+                            placeholder: "Enter a topic name (e.g., technology, music)",
+                            style: "width: 100%; padding: 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;",
+                        }
+                        small {
+                            style: "color: #666; font-size: 12px;",
+                            "Posts with topics can be discovered by others interested in the same topic"
+                        }
+                    }
+                    
+                    div {
+                        style: "margin-bottom: 10px;",
+                        label {
+                            style: "display: block; margin-bottom: 5px; font-weight: bold;",
+                            "Post Content"
+                        }
+                        textarea {
+                            value: "{post_content}",
+                            oninput: move |evt| *post_content.write() = evt.value(),
+                            placeholder: "What's on your mind?",
+                            style: "width: 100%; min-height: 150px; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; font-family: inherit;",
+                        }
                     }
                     
                     button {
