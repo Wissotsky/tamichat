@@ -20,44 +20,59 @@ fn UsernameDisplay(system_key_b64: String) -> Element {
     let truncated_key = truncate_base64_display(&system_key_b64, 12);
     let full_key = system_key_b64.clone();
     
-    // Use resource to fetch the username
-    let username_resource = use_resource(move || {
-        let system_key_b64_clone = system_key_b64.clone();
-        async move {
-            // Decode the base64 public key
-            match BASE64_URL_SAFE_NO_PAD.decode(&system_key_b64_clone) {
-                Ok(bytes) => {
-                    match PublicKey::decode(&bytes[..]) {
-                        Ok(public_key) => {
-                            // Fetch username from API
-                            match fetch_username(&public_key).await {
-                                Ok(username_opt) => username_opt,
-                                Err(e) => {
-                                    tracing::warn!("Failed to fetch username: {}", e);
-                                    None
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to decode public key: {}", e);
+    let mut username_state = use_signal(|| None::<Option<String>>);
+    
+    // Fetch username once when component mounts or system_key_b64 changes
+    use_effect(move || {
+        let system_key_clone = system_key_b64.clone();
+        spawn(async move {
+            // First check cache
+            match get_cached_username(&system_key_clone) {
+                Ok(Some(cached)) => {
+                    // Check if cache should be refreshed
+                    if should_refresh_username(&cached) {
+                        tracing::info!("Username cache expired for {}, refreshing...", system_key_clone);
+                        // Display cached value immediately but fetch updated one
+                        *username_state.write() = Some(if cached.username.is_empty() {
                             None
-                        }
+                        } else {
+                            Some(cached.username.clone())
+                        });
+                        
+                        // Fetch fresh data in background
+                        fetch_and_cache_username(&system_key_clone, &mut username_state).await;
+                    } else {
+                        tracing::info!("Username cache hit for {} (age: {}ms)", 
+                            system_key_clone, 
+                            chrono::Utc::now().timestamp_millis() as u64 - cached.cached_at);
+                        *username_state.write() = Some(if cached.username.is_empty() {
+                            None
+                        } else {
+                            Some(cached.username)
+                        });
                     }
+                    return;
+                }
+                Ok(None) => {
+                    // Cache miss - fetch from API
+                    tracing::info!("Username cache miss for {}, fetching...", system_key_clone);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to decode base64: {}", e);
-                    None
+                    tracing::warn!("Error reading username cache: {}", e);
                 }
             }
-        }
+            
+            // No cache or error - fetch from API
+            fetch_and_cache_username(&system_key_clone, &mut username_state).await;
+        });
     });
 
     rsx! {
         span {
             class: "message-system",
             title: "{full_key}",
-            match username_resource() {
-                Some(Some(username)) => rsx! {
+            match username_state() {
+                Some(Some(username)) if !username.is_empty() => rsx! {
                     span {
                         class: "username",
                         "@{username}"
@@ -67,7 +82,7 @@ fn UsernameDisplay(system_key_b64: String) -> Element {
                         " ({truncated_key})"
                     }
                 },
-                Some(None) => rsx! {
+                Some(Some(_)) | Some(None) => rsx! {
                     span {
                         class: "system-key-only",
                         "{truncated_key}"
@@ -80,6 +95,45 @@ fn UsernameDisplay(system_key_b64: String) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+async fn fetch_and_cache_username(system_key: &str, username_state: &mut Signal<Option<Option<String>>>) {
+    match BASE64_URL_SAFE_NO_PAD.decode(system_key) {
+        Ok(bytes) => {
+            match PublicKey::decode(&bytes[..]) {
+                Ok(public_key) => {
+                    match fetch_username(&public_key).await {
+                        Ok(username_opt) => {
+                            // Cache the result (even if None)
+                            let cache_value = username_opt.as_ref().map(|s| s.as_str()).unwrap_or("");
+                            if let Err(e) = cache_username(system_key, cache_value) {
+                                tracing::warn!("Failed to cache username: {}", e);
+                            } else {
+                                if let Some(ref username) = username_opt {
+                                    tracing::info!("Cached username '{}' for {}", username, system_key);
+                                } else {
+                                    tracing::info!("Cached empty username for {}", system_key);
+                                }
+                            }
+                            *username_state.write() = Some(username_opt);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch username for {}: {}", system_key, e);
+                            *username_state.write() = Some(None);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to decode public key: {}", e);
+                    *username_state.write() = Some(None);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to decode base64: {}", e);
+            *username_state.write() = Some(None);
         }
     }
 }
@@ -324,6 +378,13 @@ pub fn ChatPage() -> Element {
                                         }
                                     }
                                 }
+                                
+                                // Cache the username for this user
+                                let own_key = encode_public_key_to_base64(&public_key_clone);
+                                if let Err(e) = cache_username(&own_key, &username) {
+                                    tracing::warn!("Failed to cache own username: {}", e);
+                                }
+                                
                                 *username_status.write() = Some("Username updated successfully!".to_string());
                                 *current_username.write() = Some(username.clone());
                             }
@@ -451,6 +512,13 @@ rsx! {
                                                                 }
                                                             }
                                                         }
+                                                        
+                                                        // Cache the username for this user
+                                                        let own_key = encode_public_key_to_base64(&public_key_clone);
+                                                        if let Err(e) = cache_username(&own_key, &username) {
+                                                            tracing::warn!("Failed to cache own username: {}", e);
+                                                        }
+                                                        
                                                         *username_status.write() = Some("Username updated successfully!".to_string());
                                                         *current_username.write() = Some(username.clone());
                                                     }

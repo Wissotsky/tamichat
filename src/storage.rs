@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::tamichat::protocol::{PublicKey, Process};
 
+/// Username cache entry with timestamp
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CachedUsername {
+    pub username: String,
+    pub cached_at: u64, // Unix timestamp in milliseconds
+}
+
 /// Serializable identity structure for storage
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StoredIdentity {
@@ -92,6 +99,107 @@ impl StoredIdentity {
 
 #[cfg(target_arch = "wasm32")]
 const STORAGE_KEY: &str = "tamichat_identity";
+
+#[cfg(target_arch = "wasm32")]
+const USERNAME_CACHE_KEY: &str = "tamichat_username_cache";
+
+/// Save a username to the cache
+#[cfg(target_arch = "wasm32")]
+pub fn cache_username(system_key_b64: &str, username: &str) -> Result<(), String> {
+    use web_sys::window;
+    use std::collections::HashMap;
+    use chrono::Utc;
+
+    let window = window().ok_or("No window object available")?;
+    let storage = window
+        .local_storage()
+        .map_err(|e| format!("Failed to access localStorage: {:?}", e))?
+        .ok_or("localStorage not available")?;
+
+    // Load existing cache
+    let mut cache: HashMap<String, CachedUsername> = match storage
+        .get_item(USERNAME_CACHE_KEY)
+        .map_err(|e| format!("Failed to read username cache: {:?}", e))?
+    {
+        Some(json_str) => serde_json::from_str(&json_str).unwrap_or_default(),
+        None => HashMap::new(),
+    };
+
+    // Get current timestamp in milliseconds
+    let now = Utc::now().timestamp_millis() as u64;
+
+    // Add/update username with timestamp
+    cache.insert(system_key_b64.to_string(), CachedUsername {
+        username: username.to_string(),
+        cached_at: now,
+    });
+
+    // Save back to storage
+    let json = serde_json::to_string(&cache)
+        .map_err(|e| format!("Failed to serialize username cache: {}", e))?;
+
+    storage
+        .set_item(USERNAME_CACHE_KEY, &json)
+        .map_err(|e| format!("Failed to save username cache: {:?}", e))?;
+
+    Ok(())
+}
+
+/// Get a username from the cache, returning None if expired
+#[cfg(target_arch = "wasm32")]
+pub fn get_cached_username(system_key_b64: &str) -> Result<Option<CachedUsername>, String> {
+    use web_sys::window;
+    use std::collections::HashMap;
+
+    let window = window().ok_or("No window object available")?;
+    let storage = window
+        .local_storage()
+        .map_err(|e| format!("Failed to access localStorage: {:?}", e))?
+        .ok_or("localStorage not available")?;
+
+    // Load existing cache
+    let cache: HashMap<String, CachedUsername> = match storage
+        .get_item(USERNAME_CACHE_KEY)
+        .map_err(|e| format!("Failed to read username cache: {:?}", e))?
+    {
+        Some(json_str) => serde_json::from_str(&json_str).unwrap_or_default(),
+        None => HashMap::new(),
+    };
+
+    Ok(cache.get(system_key_b64).cloned())
+}
+
+/// Check if a cached username should be refreshed
+#[cfg(target_arch = "wasm32")]
+pub fn should_refresh_username(cached: &CachedUsername) -> bool {
+    use chrono::Utc;
+    
+    let now = Utc::now().timestamp_millis() as u64;
+    let age_ms = now.saturating_sub(cached.cached_at);
+    
+    if cached.username.is_empty() {
+        // Empty usernames: refresh after 5 minutes
+        age_ms > 5 * 60 * 1000
+    } else {
+        // Non-empty usernames: refresh after 1 hour
+        age_ms > 60 * 60 * 1000
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn cache_username(_system_key_b64: &str, _username: &str) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_cached_username(_system_key_b64: &str) -> Result<Option<CachedUsername>, String> {
+    Ok(None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn should_refresh_username(_cached: &CachedUsername) -> bool {
+    true
+}
 
 /// Save identity to localStorage
 #[cfg(target_arch = "wasm32")]
