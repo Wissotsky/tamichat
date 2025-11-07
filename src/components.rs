@@ -22,9 +22,28 @@ fn UsernameDisplay(system_key_b64: String) -> Element {
     
     let mut username_state = use_signal(|| None::<Option<String>>);
     
-    // Fetch username once when component mounts or system_key_b64 changes
+    // Fetch username when system_key_b64 changes - memo tracks the key
     use_effect(move || {
         let system_key_clone = system_key_b64.clone();
+        
+        // IMPORTANT: Reset username state when key changes to prevent showing wrong username
+        *username_state.write() = None;
+        
+        // Check cache synchronously first to set initial state
+        if let Ok(Some(cached)) = get_cached_username(&system_key_clone) {
+            if !should_refresh_username(&cached) {
+                // Cache is fresh, use it immediately
+                *username_state.write() = Some(if cached.username.is_empty() {
+                    None
+                } else {
+                    Some(cached.username.clone())
+                });
+                tracing::info!("Username cache hit (sync) for {}", system_key_clone);
+                return; // Don't spawn async task if cache is fresh
+            }
+        }
+        
+        // Then spawn async fetch
         spawn(async move {
             // First check cache
             match get_cached_username(&system_key_clone) {
@@ -599,7 +618,7 @@ rsx! {
                 }
                 div {  
                     class: "messages-list",
-                    for message in messages().iter() {
+                    for (index, message) in messages().iter().enumerate() {
                         {
                             let is_own_message = if let Some((_, ref public_key, _, _)) = identity() {
                                 let own_key = encode_public_key_to_base64(public_key);
@@ -608,8 +627,12 @@ rsx! {
                                 false
                             };
                             
+                            // Create unique key from timestamp + system_key to ensure proper component identity
+                            let unique_key = format!("{}-{}", message.timestamp, message.system_key);
+                            
                             rsx! {
                                 div {
+                                    key: "{unique_key}",
                                     class: if is_own_message { "message own-message" } else { "message" },
                                     p {
                                         class: "message-content",
@@ -623,6 +646,7 @@ rsx! {
                                         }
                                         " - "
                                         UsernameDisplay {
+                                            key: "{unique_key}",
                                             system_key_b64: message.system_key.clone()
                                         }
                                     }
