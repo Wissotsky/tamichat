@@ -1,6 +1,10 @@
 use dioxus::prelude::*;
 use prost::Message;
 use base64::prelude::*;
+use ed25519_dalek::{SigningKey, Signature, Signer};
+use rand::rngs::OsRng;
+use rand::TryRngCore;
+use chrono::Utc;
 
 pub mod tamichat {
     pub mod protocol {
@@ -21,6 +25,83 @@ fn truncate_base64(encoded: String, max_len: usize) -> String {
     } else {
         format!("{}...", &encoded[..max_len])
     }
+}
+
+/// Generate a new identity (system keypair)
+fn generate_identity() -> (SigningKey, PublicKey) {
+    let mut rng = OsRng.unwrap_err();
+    let signing_key = SigningKey::generate(&mut rng);
+    let verifying_key = signing_key.verifying_key();
+    
+    let public_key = PublicKey {
+        key_type: 1, // ed25519
+        key: verifying_key.to_bytes().to_vec(),
+    };
+    
+    (signing_key, public_key)
+}
+
+/// Generate a new random process ID
+fn generate_process() -> Process {
+    let mut process_bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut OsRng.unwrap_err(), &mut process_bytes);
+    
+    Process {
+        process: process_bytes.to_vec(),
+    }
+}
+
+/// Create and sign a post event
+fn create_post(
+    signing_key: &SigningKey,
+    public_key: &PublicKey,
+    process: &Process,
+    logical_clock: u64,
+    content: String,
+) -> Result<SignedEvent, Box<dyn std::error::Error>> {
+    // Create the Post content
+    let post = Post {
+        content: Some(content),
+        images: vec![],
+    };
+    
+    let mut post_bytes = Vec::new();
+    post.encode(&mut post_bytes)?;
+    
+    // Get current unix milliseconds using chrono (wasm-compatible)
+    let unix_milliseconds = Utc::now().timestamp_millis() as u64;
+    
+    // Create the Event
+    let event = tamichat::protocol::Event {
+        system: Some(public_key.clone()),
+        process: Some(process.clone()),
+        logical_clock,
+        content_type: 3, // Post
+        content: post_bytes,
+        vector_clock: Some(VectorClock {
+            logical_clocks: vec![],
+        }),
+        indices: Some(Indices {
+            indices: vec![],
+        }),
+        lww_element_set: None,
+        lww_element: None,
+        references: vec![],
+        unix_milliseconds: Some(unix_milliseconds),
+    };
+    
+    // Encode the event
+    let mut event_bytes = Vec::new();
+    event.encode(&mut event_bytes)?;
+    
+    // Sign the event
+    let signature: Signature = signing_key.sign(&event_bytes);
+    
+    Ok(SignedEvent {
+        signature: signature.to_bytes().to_vec(),
+        event: event_bytes,
+        moderation_tags: vec![],
+    })
 }
 
 fn main() {
@@ -44,15 +125,21 @@ fn App() -> Element {
                 }
                 button {
                     onclick: move |_| *current_page.write() = "explore",
-                    style: if current_page() == "explore" { "font-weight: bold;" } else { "" },
+                    style: if current_page() == "explore" { "font-weight: bold; margin-right: 10px;" } else { "margin-right: 10px;" },
                     "Explore"
+                }
+                button {
+                    onclick: move |_| *current_page.write() = "create",
+                    style: if current_page() == "create" { "font-weight: bold;" } else { "" },
+                    "Create Post"
                 }
             }
             
-            if current_page() == "query" {
-                DataFetcher {}
-            } else {
-                ExplorePage {}
+            match *current_page.read() {
+                "query" => rsx! { DataFetcher {} },
+                "explore" => rsx! { ExplorePage {} },
+                "create" => rsx! { CreatePostPage {} },
+                _ => rsx! { DataFetcher {} },
             }
         }
     }
@@ -601,4 +688,192 @@ async fn fetch_explore_data() -> Result<ResultEventsAndRelatedEventsAndCursor, B
     tracing::info!("Explore Response: {:?}", explore_response);
     
     Ok(explore_response)
+}
+
+// Post events to the server
+async fn post_events_to_server(signed_event: SignedEvent) -> Result<(), Box<dyn std::error::Error>> {
+    let url = "https://serv1.polycentric.io/events";
+    
+    // Create Events message containing the signed event
+    let events = Events {
+        events: vec![signed_event],
+    };
+    
+    // Encode to protobuf
+    let mut protobuf_bytes = Vec::new();
+    events.encode(&mut protobuf_bytes)?;
+    
+    // Post to server
+    let client = reqwest::Client::new();
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/protobuf")
+        .body(protobuf_bytes)
+        .send()
+        .await?;
+    
+    if response.status().is_success() {
+        tracing::info!("Successfully posted event to server");
+        Ok(())
+    } else {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("Server returned error {}: {}", status, error_text).into())
+    }
+}
+
+#[component]
+fn CreatePostPage() -> Element {
+    let mut identity = use_signal(|| None::<(SigningKey, PublicKey, Process)>);
+    let mut post_content = use_signal(|| String::new());
+    let mut logical_clock = use_signal(|| 1u64);
+    let mut status_message = use_signal(|| None::<String>);
+    let mut created_post = use_signal(|| None::<SignedEvent>);
+    let mut is_posting = use_signal(|| false);
+    
+    let create_identity = move |_| {
+        let (signing_key, public_key) = generate_identity();
+        let process = generate_process();
+        *identity.write() = Some((signing_key, public_key, process));
+        *status_message.write() = Some("Identity created successfully!".to_string());
+        *logical_clock.write() = 1;
+    };
+    
+    let submit_post = move |_| {
+        if let Some((ref signing_key, ref public_key, ref process)) = identity() {
+            let content = post_content();
+            
+            if content.is_empty() {
+                *status_message.write() = Some("Error: Post content cannot be empty".to_string());
+                return;
+            }
+            
+            // Clone values for async block
+            let signing_key_clone = signing_key.clone();
+            let public_key_clone = public_key.clone();
+            let process_clone = process.clone();
+            let current_clock = logical_clock();
+            
+            spawn(async move {
+                *is_posting.write() = true;
+                *status_message.write() = Some("Creating and posting event...".to_string());
+                
+                match create_post(&signing_key_clone, &public_key_clone, &process_clone, current_clock, content) {
+                    Ok(signed_event) => {
+                        // Try to post to server
+                        match post_events_to_server(signed_event.clone()).await {
+                            Ok(()) => {
+                                *created_post.write() = Some(signed_event.clone());
+                                *status_message.write() = Some(format!("Post created and published successfully! Logical clock: {}", current_clock));
+                                *logical_clock.write() = current_clock + 1;
+                                *post_content.write() = String::new();
+                            }
+                            Err(e) => {
+                                *status_message.write() = Some(format!("Error posting to server: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        *status_message.write() = Some(format!("Error creating post: {}", e));
+                    }
+                }
+                
+                *is_posting.write() = false;
+            });
+        } else {
+            *status_message.write() = Some("Error: Please create an identity first".to_string());
+        }
+    };
+    
+    rsx! {
+        div {
+            style: "max-width: 800px; margin: 0 auto;",
+            h1 { "Create Post" }
+            
+            // Identity Section
+            div {
+                style: "margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px;",
+                h2 { "Identity" }
+                
+                if let Some((_, ref public_key, ref process)) = identity() {
+                    div {
+                        div {
+                            style: "margin-bottom: 10px;",
+                            strong { "System (Public Key): " }
+                            br {}
+                            span {
+                                style: "font-family: monospace; font-size: 0.9em; word-break: break-all;",
+                                {BASE64_STANDARD.encode(&public_key.key)}
+                            }
+                        }
+                        div {
+                            style: "margin-bottom: 10px;",
+                            strong { "Process ID: " }
+                            br {}
+                            span {
+                                style: "font-family: monospace; font-size: 0.9em;",
+                                {BASE64_STANDARD.encode(&process.process)}
+                            }
+                        }
+                        div {
+                            strong { "Logical Clock: " }
+                            span { "{logical_clock()}" }
+                        }
+                    }
+                } else {
+                    div {
+                        p { "No identity created yet. Create one to start posting." }
+                        button {
+                            onclick: create_identity,
+                            style: "padding: 10px 20px; font-size: 16px; cursor: pointer;",
+                            "Generate Identity"
+                        }
+                    }
+                }
+            }
+            
+            // Post Creation Section
+            if identity().is_some() {
+                div {
+                    style: "margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px;",
+                    h2 { "Create a Post" }
+                    
+                    textarea {
+                        value: "{post_content}",
+                        oninput: move |evt| *post_content.write() = evt.value(),
+                        placeholder: "What's on your mind?",
+                        style: "width: 100%; min-height: 150px; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px; font-family: inherit;",
+                    }
+                    
+                    button {
+                        onclick: submit_post,
+                        disabled: post_content().is_empty() || is_posting(),
+                        style: "padding: 10px 20px; font-size: 16px; cursor: pointer; background-color: #007acc; color: white; border: none; border-radius: 4px;",
+                        if is_posting() { "Posting..." } else { "Submit Post" }
+                    }
+                }
+            }
+            
+            // Status Messages
+            if let Some(ref message) = status_message() {
+                div {
+                    style: if message.starts_with("Error") {
+                        "padding: 15px; margin-bottom: 20px; background-color: #fee; border: 1px solid #fcc; border-radius: 4px; color: #c00;"
+                    } else {
+                        "padding: 15px; margin-bottom: 20px; background-color: #efe; border: 1px solid #cfc; border-radius: 4px; color: #060;"
+                    },
+                    {message.clone()}
+                }
+            }
+            
+            // Display Created Post
+            if let Some(ref post) = created_post() {
+                div {
+                    style: "padding: 20px; border: 1px solid #ddd; border-radius: 8px;",
+                    h2 { "Last Created Post" }
+                    SignedEventDisplay { event: post.clone() }
+                }
+            }
+        }
+    }
 }
