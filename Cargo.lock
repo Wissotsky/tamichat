@@ -4714,7 +4714,11 @@ dependencies = [
  "prost-build",
  "rand 0.9.2",
  "reqwest",
+ "serde",
+ "serde_json",
  "tracing",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
