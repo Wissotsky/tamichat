@@ -21,6 +21,7 @@ pub fn ChatPage() -> Element {
     let mut identity = use_signal(|| None::<(SigningKey, PublicKey, Process, u64)>);
     let mut is_sending = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
+    let mut show_scroll_button = use_signal(|| false);
     
     // Helper function to scroll chat to bottom
     let scroll_to_bottom = move || {
@@ -33,6 +34,21 @@ pub fn ChatPage() -> Element {
             "#
         );
     };
+    
+    // Set up scroll listener to show/hide button
+    use_effect(move || {
+        document::eval(&format!(
+            r#"
+            const messagesDiv = document.getElementById('messages');
+            if (messagesDiv) {{
+                messagesDiv.addEventListener('scroll', function() {{
+                    const isNearBottom = messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight < 100;
+                    window.updateScrollButton = !isNearBottom;
+                }});
+            }}
+            "#
+        ));
+    });
     
     // Auto-create identity on mount
     use_effect(move || {
@@ -121,16 +137,18 @@ pub fn ChatPage() -> Element {
         }
     };
     
-    rsx! {
+rsx! {
+    div {
+        class: "chat-container",
+        
         div {
-            class: "chat-container",
-            
-            div {
-                class: "chat-header",
-                h1 { "TamiChat" }
-                p { "Shoutbox bolted on top of polycentric" }
-            }
-            
+            class: "chat-header",
+            h1 { "TamiChat" }
+            p { "Shoutbox bolted on top of polycentric" }
+        }
+        
+        div {
+            class: "chat-messages-wrapper", // New wrapper for positioning
             div {
                 class: "chat-messages",
                 id: "messages",
@@ -141,30 +159,43 @@ pub fn ChatPage() -> Element {
                         "Loading messages..."
                     }
                 }
-                
-                for message in messages().iter() {
-                    div {
-                        class: "message",
-                        p {
-                            class: "message-content",
-                            {message.content.clone()}
-                        }
-                        small {
-                            class: "message-meta",
-                            span {
-                                class: "message-time",
-                                {format_timestamp(message.timestamp)}
+                div {  
+                    class: "messages-list",
+                    for message in messages().iter() {
+                        div {
+                            class: "message",
+                            p {
+                                class: "message-content",
+                                {message.content.clone()}
                             }
-                            " - "
-                            span {
-                                class: "message-system",
-                                {message.system_key[..8].to_string()}
+                            small {
+                                class: "message-meta",
+                                span {
+                                    class: "message-time",
+                                    {format_timestamp(message.timestamp)}
+                                }
+                                " - "
+                                span {
+                                    class: "message-system",
+                                    {message.system_key[..8].to_string()}
+                                }
                             }
                         }
                     }
                 }
             }
             
+            // Move button outside of scrollable container but inside wrapper
+            button {
+                class: "scroll-to-bottom-btn",
+                onclick: move |_| scroll_to_bottom(),
+                title: "Scroll to bottom",
+                "↓"
+            }
+        }
+
+            
+
             if let Some(ref err) = error() {
                 p {
                     class: "error-message",

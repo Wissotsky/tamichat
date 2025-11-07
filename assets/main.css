@@ -165,13 +165,51 @@ button:active:not(:disabled) {
     margin-right: 4px;
 }
 
+.chat-messages-wrapper {
+    position: relative; /* This makes the button position relative to this wrapper */
+    margin-bottom: 10px;
+}
+
 .chat-messages {
     height: 400px;
-    overflow-y: scroll;
+    overflow-y: auto;
     border: 1px solid #999;
     padding: 10px;
     background: #fff;
-    margin-bottom: 10px;
+}
+
+.messages-list {
+    height: 100%;
+}
+
+.scroll-to-bottom-btn {
+    position: absolute;
+    bottom: 0px; /* Position relative to the wrapper */
+    right: 20px;  /* Position relative to the wrapper */
+    width: 36px;
+    height: 36px;
+    background: #ddd;
+    border: 2px solid #000;
+    font-size: 18px;
+    font-weight: bold;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    z-index: 10;
+}
+
+.scroll-to-bottom-btn:hover:not(:disabled) {
+    background: #ccc;
+    border-color: #000;
+}
+
+.scroll-to-bottom-btn:active:not(:disabled) {
+    background: #bbb;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }
 
 .message {
