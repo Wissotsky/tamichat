@@ -3,10 +3,33 @@ use chrono::{DateTime, Utc};
 use prost::Message;
 use crate::tamichat::protocol::*;
 
-/// Safely truncate a base64-encoded string to a maximum length
-pub fn truncate_base64(encoded: String, max_len: usize) -> String {
+/// Encode a PublicKey as a base64url-encoded protobuf message
+/// This matches the official implementation's format
+pub fn encode_public_key_to_base64(public_key: &PublicKey) -> String {
+    let mut bytes = Vec::new();
+    public_key.encode(&mut bytes).expect("Failed to encode PublicKey");
+    BASE64_URL_SAFE_NO_PAD.encode(&bytes)
+}
+
+/// Decode a base64url-encoded protobuf message into a PublicKey
+#[allow(dead_code)]
+pub fn decode_public_key_from_base64(encoded: &str) -> Result<PublicKey, String> {
+    let bytes = BASE64_URL_SAFE_NO_PAD.decode(encoded.as_bytes())
+        .map_err(|e| format!("Base64 decode error: {}", e))?;
+    PublicKey::decode(&bytes[..])
+        .map_err(|e| format!("Protobuf decode error: {}", e))
+}
+
+/// Returns the full base64 string (for backward compatibility or future use)
+#[allow(dead_code)]
+pub fn truncate_base64(encoded: String) -> String {
+    encoded
+}
+
+/// Get the display version (truncated) of a base64 string for showing in UI
+pub fn truncate_base64_display(encoded: &str, max_len: usize) -> String {
     if encoded.len() <= max_len {
-        encoded
+        encoded.to_string()
     } else {
         format!("{}...", &encoded[..max_len])
     }
@@ -35,18 +58,18 @@ pub fn format_query_references_request(request: &QueryReferencesRequest) -> Stri
                 if let Ok(pointer) = Pointer::decode(&reference.reference[..]) {
                     output.push_str("  Pointer:\n");
                     if let Some(ref system) = pointer.system {
-                        output.push_str(&format!("    System: {}\n", BASE64_STANDARD.encode(&system.key)));
+                        output.push_str(&format!("    System: {}\n", encode_public_key_to_base64(system)));
                     }
                     if let Some(ref process) = pointer.process {
-                        output.push_str(&format!("    Process: {}\n", BASE64_STANDARD.encode(&process.process)));
+                        output.push_str(&format!("    Process: {}\n", BASE64_URL_SAFE_NO_PAD.encode(&process.process)));
                     }
                     output.push_str(&format!("    Logical Clock: {}\n", pointer.logical_clock));
                     if let Some(ref digest) = pointer.event_digest {
                         output.push_str(&format!("    Digest Type: {}\n", digest.digest_type));
-                        output.push_str(&format!("    Digest: {}\n", BASE64_STANDARD.encode(&digest.digest)));
+                        output.push_str(&format!("    Digest: {}\n", BASE64_URL_SAFE_NO_PAD.encode(&digest.digest)));
                     }
                 } else {
-                    output.push_str(&format!("  Raw: {}\n", BASE64_STANDARD.encode(&reference.reference)));
+                    output.push_str(&format!("  Raw: {}\n", BASE64_URL_SAFE_NO_PAD.encode(&reference.reference)));
                 }
             },
             3 => {
@@ -54,18 +77,18 @@ pub fn format_query_references_request(request: &QueryReferencesRequest) -> Stri
                 if let Ok(topic) = String::from_utf8(reference.reference.clone()) {
                     output.push_str(&format!("  Topic: \"{}\"\n", topic));
                 } else {
-                    output.push_str(&format!("  Bytes: {}\n", BASE64_STANDARD.encode(&reference.reference)));
+                    output.push_str(&format!("  Bytes: {}\n", BASE64_URL_SAFE_NO_PAD.encode(&reference.reference)));
                 }
             },
             _ => {
-                output.push_str(&format!("  Raw: {}\n", BASE64_STANDARD.encode(&reference.reference)));
+                output.push_str(&format!("  Raw: {}\n", BASE64_URL_SAFE_NO_PAD.encode(&reference.reference)));
             }
         }
     }
     
     // Format cursor if present
     if let Some(ref cursor) = request.cursor {
-        output.push_str(&format!("\nCursor: {}\n", BASE64_STANDARD.encode(cursor)));
+        output.push_str(&format!("\nCursor: {}\n", BASE64_URL_SAFE_NO_PAD.encode(cursor)));
     }
     
     // Format request_events if present
@@ -90,7 +113,7 @@ pub fn format_query_references_request(request: &QueryReferencesRequest) -> Stri
             if let Ok(value_str) = String::from_utf8(lww_ref.value.clone()) {
                 output.push_str(&format!("    Value: \"{}\"\n", value_str));
             } else {
-                output.push_str(&format!("    Value: {}\n", BASE64_STANDARD.encode(&lww_ref.value)));
+                output.push_str(&format!("    Value: {}\n", BASE64_URL_SAFE_NO_PAD.encode(&lww_ref.value)));
             }
             if let Some(from_type) = lww_ref.from_type {
                 output.push_str(&format!("    From Type: {}\n", from_type));
@@ -116,7 +139,7 @@ pub fn format_query_references_request(request: &QueryReferencesRequest) -> Stri
             if let Ok(text) = String::from_utf8(bytes.clone()) {
                 output.push_str(&format!("  [{}]: \"{}\"\n", i, text));
             } else {
-                output.push_str(&format!("  [{}]: {}\n", i, BASE64_STANDARD.encode(bytes)));
+                output.push_str(&format!("  [{}]: {}\n", i, BASE64_URL_SAFE_NO_PAD.encode(bytes)));
             }
         }
     }

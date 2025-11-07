@@ -242,3 +242,51 @@ pub async fn post_events_to_server(signed_event: SignedEvent) -> Result<(), Box<
         Err(format!("Server returned error {}: {}", status, error_text).into())
     }
 }
+
+/// Fetch username for a given system (public key)
+/// Returns None if the account has no username set
+pub async fn fetch_username(public_key: &PublicKey) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    // Encode the public key as protobuf and then base64
+    let mut public_key_bytes = Vec::new();
+    public_key.encode(&mut public_key_bytes)?;
+    let encoded_system = BASE64_URL_SAFE_NO_PAD.encode(&public_key_bytes);
+    
+    // Build the URL with content_type=5 (username)
+    let url = format!(
+        "https://serv1.polycentric.io/query_index?system={}&content_type=5",
+        encoded_system
+    );
+    
+    tracing::info!("Fetching username for system: {}", encoded_system);
+    
+    let response = reqwest::get(&url).await?;
+    let protobuf_bytes = response.bytes().await?;
+    
+    // Parse the QueryIndexResponse
+    let query_response = QueryIndexResponse::decode(&protobuf_bytes[..])?;
+    
+    // Extract username from events
+    // Look for the most recent event with lww_element containing the username
+    let mut latest_username: Option<(String, u64)> = None; // (username, unix_milliseconds)
+    
+    for signed_event in query_response.events.iter() {
+        if let Ok(event) = crate::tamichat::protocol::Event::decode(&signed_event.event[..]) {
+            if let Some(lww_element) = event.lww_element {
+                let username = String::from_utf8(lww_element.value)?;
+                let timestamp = lww_element.unix_milliseconds;
+                
+                // Keep the most recent username
+                match &latest_username {
+                    None => latest_username = Some((username, timestamp)),
+                    Some((_, existing_timestamp)) => {
+                        if timestamp > *existing_timestamp {
+                            latest_username = Some((username, timestamp));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(latest_username.map(|(username, _)| username))
+}

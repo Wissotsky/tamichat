@@ -16,6 +16,75 @@ pub struct ChatMessage {
 }
 
 #[component]
+fn UsernameDisplay(system_key_b64: String) -> Element {
+    let truncated_key = truncate_base64_display(&system_key_b64, 12);
+    let full_key = system_key_b64.clone();
+    
+    // Use resource to fetch the username
+    let username_resource = use_resource(move || {
+        let system_key_b64_clone = system_key_b64.clone();
+        async move {
+            // Decode the base64 public key
+            match BASE64_URL_SAFE_NO_PAD.decode(&system_key_b64_clone) {
+                Ok(bytes) => {
+                    match PublicKey::decode(&bytes[..]) {
+                        Ok(public_key) => {
+                            // Fetch username from API
+                            match fetch_username(&public_key).await {
+                                Ok(username_opt) => username_opt,
+                                Err(e) => {
+                                    tracing::warn!("Failed to fetch username: {}", e);
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to decode public key: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to decode base64: {}", e);
+                    None
+                }
+            }
+        }
+    });
+
+    rsx! {
+        span {
+            class: "message-system",
+            title: "{full_key}",
+            match username_resource() {
+                Some(Some(username)) => rsx! {
+                    span {
+                        class: "username",
+                        "@{username}"
+                    }
+                    span {
+                        class: "system-key-hint",
+                        " ({truncated_key})"
+                    }
+                },
+                Some(None) => rsx! {
+                    span {
+                        class: "system-key-only",
+                        "{truncated_key}"
+                    }
+                },
+                None => rsx! {
+                    span {
+                        class: "username-loading",
+                        "{truncated_key}..."
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 pub fn ChatPage() -> Element {
     let mut messages = use_signal(|| Vec::<ChatMessage>::new());
     let mut message_input = use_signal(|| String::new());
@@ -24,6 +93,12 @@ pub fn ChatPage() -> Element {
     let mut error = use_signal(|| None::<String>);
     let _show_scroll_button = use_signal(|| false);
     let mut previous_message_count = use_signal(|| 0usize);
+    let mut sidebar_open = use_signal(|| false);
+    let mut username_input = use_signal(|| String::new());
+    let mut is_setting_username = use_signal(|| false);
+    let mut username_status = use_signal(|| None::<String>);
+    let mut current_username = use_signal(|| None::<String>);
+    let mut is_loading_username = use_signal(|| false);
     
     // Helper function to scroll chat to bottom
     let scroll_to_bottom = move || {
@@ -85,6 +160,32 @@ pub fn ChatPage() -> Element {
                     }
                 }
             });
+        }
+    });
+    
+    // Fetch current username when identity is loaded
+    use_effect(move || {
+        if let Some((_, ref public_key, _, _)) = identity() {
+            if current_username().is_none() && !is_loading_username() {
+                let public_key_clone = public_key.clone();
+                spawn(async move {
+                    *is_loading_username.write() = true;
+                    match fetch_username(&public_key_clone).await {
+                        Ok(Some(username)) => {
+                            *current_username.write() = Some(username.clone());
+                            *username_input.write() = username;
+                        }
+                        Ok(None) => {
+                            *current_username.write() = Some(String::new());
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to fetch current username: {}", e);
+                            *current_username.write() = Some(String::new());
+                        }
+                    }
+                    *is_loading_username.write() = false;
+                });
+            }
         }
     });
     
@@ -181,16 +282,240 @@ pub fn ChatPage() -> Element {
             });
         }
     };
+
+    let set_username = move |_| {
+        let username = username_input();
+        if username.trim().is_empty() || is_setting_username() {
+            return;
+        }
+        
+        if let Some((ref signing_key, ref public_key, ref process, ref clock)) = identity() {
+            let signing_key_clone = signing_key.clone();
+            let public_key_clone = public_key.clone();
+            let process_clone = process.clone();
+            let current_clock = *clock;
+            
+            let mut is_setting_username = is_setting_username.clone();
+            let mut username_status = username_status.clone();
+            let mut identity = identity.clone();
+            let mut current_username = current_username.clone();
+            
+            spawn(async move {
+                *is_setting_username.write() = true;
+                *username_status.write() = None;
+                
+                match create_username(
+                    &signing_key_clone,
+                    &public_key_clone,
+                    &process_clone,
+                    current_clock,
+                    username.clone(),
+                ) {
+                    Ok(signed_event) => {
+                        match post_events_to_server(signed_event).await {
+                            Ok(()) => {
+                                if let Some((sk, pk, proc, _)) = identity() {
+                                    let new_clock = current_clock + 1;
+                                    *identity.write() = Some((sk, pk, proc, new_clock));
+                                    // Save updated identity to storage
+                                    if let Some((ref save_sk, ref save_pk, ref save_proc, save_clock)) = identity() {
+                                        if let Err(e) = save_identity(save_sk, save_pk, save_proc, save_clock) {
+                                            tracing::error!("Failed to save identity after username set: {}", e);
+                                        }
+                                    }
+                                }
+                                *username_status.write() = Some("Username updated successfully!".to_string());
+                                *current_username.write() = Some(username.clone());
+                            }
+                            Err(e) => {
+                                *username_status.write() = Some(format!("Failed to set username: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        *username_status.write() = Some(format!("Error creating username event: {}", e));
+                    }
+                }
+                
+                *is_setting_username.write() = false;
+            });
+        }
+    };
     
 rsx! {
     div {
-        class: "chat-container",
+        class: "chat-page-container",
         
-        div {
-            class: "chat-header",
-            h1 { "TamiChat" }
-            p { "Shoutbox bolted on top of polycentric" }
+        // Mobile menu toggle button
+        button {
+            class: "sidebar-toggle",
+            onclick: move |_| *sidebar_open.write() = !sidebar_open(),
+            "☰"
         }
+        
+        // Sidebar
+        div {
+            class: if sidebar_open() { "sidebar sidebar-open" } else { "sidebar" },
+            
+            div {
+                class: "sidebar-header",
+                h3 { "Account" }
+                button {
+                    class: "sidebar-close",
+                    onclick: move |_| *sidebar_open.write() = false,
+                    "×"
+                }
+            }
+            
+            div {
+                class: "sidebar-content",
+                
+                // Identity display
+                if let Some((_, ref public_key, _, _)) = identity() {
+                    div {
+                        class: "identity-section",
+                        h4 { "Your Identity" }
+                        p {
+                            class: "help-text",
+                            "Your public key:"
+                        }
+                        p {
+                            class: "identity-key-display",
+                            title: "{encode_public_key_to_base64(public_key)}",
+                            {encode_public_key_to_base64(public_key)}
+                        }
+                    }
+                }
+                
+                // Username setting
+                div {
+                    class: "username-section",
+                    h4 { "Username" }
+                    p {
+                        class: "help-text",
+                        "Choose a display name for the chat:"
+                    }
+                    
+                    if is_loading_username() {
+                        p {
+                            class: "loading-indicator",
+                            "Loading username..."
+                        }
+                    }
+                    
+                    input {
+                        class: if current_username().is_some() && current_username().as_ref().unwrap().is_empty() {
+                            "username-input username-input-highlight"
+                        } else {
+                            "username-input"
+                        },
+                        r#type: "text",
+                        placeholder: "Enter username...",
+                        value: "{username_input}",
+                        disabled: is_setting_username() || is_loading_username(),
+                        oninput: move |evt| *username_input.write() = evt.value(),
+                        onkeydown: move |evt| {
+                            if evt.key() == Key::Enter && !is_setting_username() {
+                                let username = username_input();
+                                if username.trim().is_empty() {
+                                    return;
+                                }
+                                
+                                if let Some((ref signing_key, ref public_key, ref process, ref clock)) = identity() {
+                                    let signing_key_clone = signing_key.clone();
+                                    let public_key_clone = public_key.clone();
+                                    let process_clone = process.clone();
+                                    let current_clock = *clock;
+                                    
+                                    spawn(async move {
+                                        *is_setting_username.write() = true;
+                                        *username_status.write() = None;
+                                        
+                                        match create_username(
+                                            &signing_key_clone,
+                                            &public_key_clone,
+                                            &process_clone,
+                                            current_clock,
+                                            username.clone(),
+                                        ) {
+                                            Ok(signed_event) => {
+                                                match post_events_to_server(signed_event).await {
+                                                    Ok(()) => {
+                                                        if let Some((sk, pk, proc, _)) = identity() {
+                                                            let new_clock = current_clock + 1;
+                                                            *identity.write() = Some((sk, pk, proc, new_clock));
+                                                            // Save updated identity to storage
+                                                            if let Some((ref save_sk, ref save_pk, ref save_proc, save_clock)) = identity() {
+                                                                if let Err(e) = save_identity(save_sk, save_pk, save_proc, save_clock) {
+                                                                    tracing::error!("Failed to save identity after username set: {}", e);
+                                                                }
+                                                            }
+                                                        }
+                                                        *username_status.write() = Some("Username updated successfully!".to_string());
+                                                        *current_username.write() = Some(username.clone());
+                                                    }
+                                                    Err(e) => {
+                                                        *username_status.write() = Some(format!("Failed to set username: {}", e));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                *username_status.write() = Some(format!("Error creating username event: {}", e));
+                                            }
+                                        }
+                                        
+                                        *is_setting_username.write() = false;
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    button {
+                        class: if current_username().is_some() && current_username().as_ref().unwrap().is_empty() {
+                            "username-submit-btn username-submit-btn-highlight"
+                        } else {
+                            "username-submit-btn"
+                        },
+                        onclick: set_username,
+                        disabled: username_input().trim().is_empty() || is_setting_username() || is_loading_username(),
+                        if is_setting_username() {
+                            "Setting..."
+                        } else if current_username().is_some() && !current_username().as_ref().unwrap().is_empty() {
+                            "Change Username"
+                        } else {
+                            "Set Username"
+                        }
+                    }
+                    
+                    if let Some(ref status) = username_status() {
+                        p {
+                            class: if status.contains("success") { "status-success" } else { "status-error" },
+                            {status.clone()}
+                        }
+                    }
+                }
+                
+                // Future sections can go here
+                // div {
+                //     class: "friends-section",
+                //     h4 { "Friends" }
+                //     p { "Coming soon..." }
+                // }
+            }
+        }
+        
+        // Main chat area
+        div {
+            class: "chat-main-area",
+            
+            div {
+                class: "chat-container",
+        
+                div {
+                    class: "chat-header",
+                    h1 { "TamiChat" }
+                    p { "Shoutbox bolted on top of polycentric" }
+                }
         
         div {
             class: "chat-messages-wrapper", // New wrapper for positioning
@@ -207,22 +532,32 @@ rsx! {
                 div {  
                     class: "messages-list",
                     for message in messages().iter() {
-                        div {
-                            class: "message",
-                            p {
-                                class: "message-content",
-                                {message.content.clone()}
-                            }
-                            small {
-                                class: "message-meta",
-                                span {
-                                    class: "message-time",
-                                    {format_timestamp(message.timestamp)}
-                                }
-                                " - "
-                                span {
-                                    class: "message-system",
-                                    {message.system_key[..8].to_string()}
+                        {
+                            let is_own_message = if let Some((_, ref public_key, _, _)) = identity() {
+                                let own_key = encode_public_key_to_base64(public_key);
+                                message.system_key == own_key
+                            } else {
+                                false
+                            };
+                            
+                            rsx! {
+                                div {
+                                    class: if is_own_message { "message own-message" } else { "message" },
+                                    p {
+                                        class: "message-content",
+                                        {message.content.clone()}
+                                    }
+                                    small {
+                                        class: "message-meta",
+                                        span {
+                                            class: "message-time",
+                                            {format_timestamp(message.timestamp)}
+                                        }
+                                        " - "
+                                        UsernameDisplay {
+                                            system_key_b64: message.system_key.clone()
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -339,7 +674,12 @@ rsx! {
                     }
                 }
             }
+            // Close chat-container
+            }
         }
+        // Close chat-main-area
+        }
+        // Close chat-page-container
     }
 }
 
@@ -359,7 +699,7 @@ async fn fetch_and_update_messages(
                                 if let Some(content) = post.content {
                                     let system_key = parsed_event.system
                                         .as_ref()
-                                        .map(|s| BASE64_STANDARD.encode(&s.key))
+                                        .map(|s| encode_public_key_to_base64(s))
                                         .unwrap_or_default();
                                     
                                     new_messages.push(ChatMessage {
@@ -635,7 +975,8 @@ pub fn DataDisplay(data: QueryReferencesResponse) -> Element {
                 h3 { "Cursor" }
                 pre {
                     class: "mono",
-                    {BASE64_STANDARD.encode(cursor)}
+                    title: "{BASE64_URL_SAFE_NO_PAD.encode(cursor)}",
+                    {BASE64_URL_SAFE_NO_PAD.encode(cursor)}
                 }
             }
 
@@ -684,6 +1025,8 @@ pub fn RelatedEvent(event: SignedEvent, index: usize) -> Element {
 #[component]
 pub fn SignedEventDisplay(event: SignedEvent) -> Element {
     let parsed_event = crate::tamichat::protocol::Event::decode(&event.event[..]).ok();
+    let signature_b64 = BASE64_URL_SAFE_NO_PAD.encode(&event.signature);
+    let signature_display = truncate_base64_display(&signature_b64, 20);
     
     rsx! {
         div {
@@ -693,7 +1036,8 @@ pub fn SignedEventDisplay(event: SignedEvent) -> Element {
                 strong { "Signature: " }
                 code {
                     class: "signature-span",
-                    {truncate_base64(BASE64_STANDARD.encode(&event.signature), 20)}
+                    title: "{signature_b64}",
+                    {signature_display}
                 }
             }
 
@@ -702,9 +1046,16 @@ pub fn SignedEventDisplay(event: SignedEvent) -> Element {
             } else {
                 p {
                     strong { "Raw Event Data: " }
-                    code {
-                        class: "signature-span",
-                        {truncate_base64(BASE64_STANDARD.encode(&event.event), 50)}
+                    {
+                        let event_b64 = BASE64_URL_SAFE_NO_PAD.encode(&event.event);
+                        let event_display = truncate_base64_display(&event_b64, 50);
+                        rsx! {
+                            code {
+                                class: "signature-span",
+                                title: "{event_b64}",
+                                {event_display}
+                            }
+                        }
                     }
                 }
             }
@@ -743,6 +1094,24 @@ pub fn EventDisplay(event: crate::tamichat::protocol::Event) -> Element {
         _ => "Unknown",
     };
 
+    let system_key_b64 = event.system.as_ref()
+        .map(|s| encode_public_key_to_base64(s))
+        .unwrap_or_else(|| "None".to_string());
+    let system_key_display = if system_key_b64 == "None" {
+        system_key_b64.clone()
+    } else {
+        truncate_base64_display(&system_key_b64, 20)
+    };
+
+    let process_b64 = event.process.as_ref()
+        .map(|p| BASE64_URL_SAFE_NO_PAD.encode(&p.process))
+        .unwrap_or_else(|| "None".to_string());
+    let process_display = if process_b64 == "None" {
+        process_b64.clone()
+    } else {
+        truncate_base64_display(&process_b64, 16)
+    };
+
     rsx! {
         div {
             class: "event-detail-bg",
@@ -751,11 +1120,8 @@ pub fn EventDisplay(event: crate::tamichat::protocol::Event) -> Element {
                 strong { "System: " }
                 code {
                     class: "system-key-span",
-                    {if let Some(ref system) = event.system {
-                        truncate_base64(BASE64_STANDARD.encode(&system.key), 20)
-                    } else {
-                        "None".to_string()
-                    }}
+                    title: "{system_key_b64}",
+                    {system_key_display}
                 }
             }
 
@@ -763,11 +1129,8 @@ pub fn EventDisplay(event: crate::tamichat::protocol::Event) -> Element {
                 strong { "Process: " }
                 code {
                     class: "process-key-span",
-                    {if let Some(ref process) = event.process {
-                        truncate_base64(BASE64_STANDARD.encode(&process.process), 16)
-                    } else {
-                        "None".to_string()
-                    }}
+                    title: "{process_b64}",
+                    {process_display}
                 }
             }
 
@@ -823,13 +1186,20 @@ pub fn EventDisplay(event: crate::tamichat::protocol::Event) -> Element {
                     strong { "References: " }
                 }
                 for (i, reference) in event.references.iter().enumerate() {
-                    div {
-                        class: "reference-details",
-                        "Reference {i + 1}: Type {reference.reference_type}"
-                        br {}
-                        code {
-                            class: "system-key-span",
-                            {truncate_base64(BASE64_STANDARD.encode(&reference.reference), 30)}
+                    {
+                        let ref_b64 = BASE64_URL_SAFE_NO_PAD.encode(&reference.reference);
+                        let ref_display = truncate_base64_display(&ref_b64, 30);
+                        rsx! {
+                            div {
+                                class: "reference-details",
+                                "Reference {i + 1}: Type {reference.reference_type}"
+                                br {}
+                                code {
+                                    class: "system-key-span",
+                                    title: "{ref_b64}",
+                                    {ref_display}
+                                }
+                            }
                         }
                     }
                 }
@@ -904,12 +1274,15 @@ pub fn ContentDisplay(content_type: u64, content: Vec<u8>) -> Element {
                     }
                 }
             } else {
+                let content_b64 = BASE64_URL_SAFE_NO_PAD.encode(&content);
+                let content_display = truncate_base64_display(&content_b64, 50);
                 rsx! {
                     p {
                         strong { "Claim Content (raw): " }
                         code {
                             class: "raw-content-span",
-                            {truncate_base64(BASE64_STANDARD.encode(&content), 50)}
+                            title: "{content_b64}",
+                            {content_display}
                         }
                     }
                 }
@@ -917,9 +1290,14 @@ pub fn ContentDisplay(content_type: u64, content: Vec<u8>) -> Element {
         },
         1 => {
             if let Ok(delete) = Delete::decode(&content[..]) {
-                let process_str = delete.process.as_ref()
-                    .map(|p| truncate_base64(BASE64_STANDARD.encode(&p.process), 16))
+                let process_b64 = delete.process.as_ref()
+                    .map(|p| BASE64_URL_SAFE_NO_PAD.encode(&p.process))
                     .unwrap_or_else(|| "None".to_string());
+                let process_display = if process_b64 == "None" {
+                    process_b64.clone()
+                } else {
+                    truncate_base64_display(&process_b64, 16)
+                };
                 
                 rsx! {
                     div {
@@ -928,7 +1306,10 @@ pub fn ContentDisplay(content_type: u64, content: Vec<u8>) -> Element {
                             class: "delete-details",
                             p {
                                 "Process: "
-                                code { {process_str} }
+                                code { 
+                                    title: "{process_b64}",
+                                    {process_display}
+                                }
                             }
                             p { "Logical Clock: {delete.logical_clock}" }
                             p { "Content Type: {delete.content_type}" }
@@ -936,12 +1317,15 @@ pub fn ContentDisplay(content_type: u64, content: Vec<u8>) -> Element {
                     }
                 }
             } else {
+                let content_b64 = BASE64_URL_SAFE_NO_PAD.encode(&content);
+                let content_display = truncate_base64_display(&content_b64, 50);
                 rsx! {
                     p {
                         strong { "Delete Content (raw): " }
                         code {
                             class: "raw-content-span",
-                            {truncate_base64(BASE64_STANDARD.encode(&content), 50)}
+                            title: "{content_b64}",
+                            {content_display}
                         }
                     }
                 }
@@ -970,12 +1354,15 @@ pub fn ContentDisplay(content_type: u64, content: Vec<u8>) -> Element {
                     }
                 }
             } else {
+                let content_b64 = BASE64_URL_SAFE_NO_PAD.encode(&content);
+                let content_display = truncate_base64_display(&content_b64, 100);
                 rsx! {
                     p {
                         strong { "Content (raw bytes): " }
                         code {
                             class: "raw-content-span",
-                            {truncate_base64(BASE64_STANDARD.encode(&content), 100)}
+                            title: "{content_b64}",
+                            {content_display}
                         }
                     }
                 }
@@ -1066,7 +1453,8 @@ pub fn ExploreDataDisplay(data: ResultEventsAndRelatedEventsAndCursor) -> Elemen
                 h3 { "Cursor" }
                 pre {
                     class: "mono",
-                    {BASE64_STANDARD.encode(cursor)}
+                    title: "{BASE64_URL_SAFE_NO_PAD.encode(cursor)}",
+                    {BASE64_URL_SAFE_NO_PAD.encode(cursor)}
                 }
             }
         }
@@ -1244,7 +1632,8 @@ pub fn CreatePostPage() -> Element {
                             br {}
                             code {
                                 class: "identity-key-span",
-                                {BASE64_STANDARD.encode(&public_key.key)}
+                                title: "{encode_public_key_to_base64(public_key)}",
+                                {encode_public_key_to_base64(public_key)}
                             }
                         }
                         p {
@@ -1253,7 +1642,8 @@ pub fn CreatePostPage() -> Element {
                             br {}
                             code {
                                 class: "identity-process-span",
-                                {BASE64_STANDARD.encode(&process.process)}
+                                title: "{BASE64_URL_SAFE_NO_PAD.encode(&process.process)}",
+                                {BASE64_URL_SAFE_NO_PAD.encode(&process.process)}
                             }
                         }
                         p {
@@ -1503,7 +1893,8 @@ pub fn AccountManagement() -> Element {
                         br {}
                         code {
                             class: "identity-key-span",
-                            {BASE64_STANDARD.encode(&public_key.key)}
+                            title: "{encode_public_key_to_base64(public_key)}",
+                            {encode_public_key_to_base64(public_key)}
                         }
                     }
                     
@@ -1513,7 +1904,8 @@ pub fn AccountManagement() -> Element {
                         br {}
                         code {
                             class: "identity-process-span",
-                            {BASE64_STANDARD.encode(&process.process)}
+                            title: "{BASE64_URL_SAFE_NO_PAD.encode(&process.process)}",
+                            {BASE64_URL_SAFE_NO_PAD.encode(&process.process)}
                         }
                     }
                     
