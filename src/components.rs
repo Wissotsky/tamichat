@@ -22,6 +22,7 @@ pub fn ChatPage() -> Element {
     let mut is_sending = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut show_scroll_button = use_signal(|| false);
+    let mut previous_message_count = use_signal(|| 0usize);
     
     // Helper function to scroll chat to bottom
     let scroll_to_bottom = move || {
@@ -65,6 +66,7 @@ pub fn ChatPage() -> Element {
             if let Err(e) = fetch_and_update_messages(&mut messages, &mut error).await {
                 tracing::error!("Error fetching messages: {}", e);
             } else {
+                *previous_message_count.write() = messages().len();
                 scroll_to_bottom();
             }
         });
@@ -75,8 +77,16 @@ pub fn ChatPage() -> Element {
         spawn(async move {
             loop {
                 gloo_timers::future::TimeoutFuture::new(5_000).await;
+                let prev_count = previous_message_count();
                 if let Err(e) = fetch_and_update_messages(&mut messages, &mut error).await {
                     tracing::error!("Error auto-fetching messages: {}", e);
+                } else {
+                    let new_count = messages().len();
+                    if new_count > prev_count {
+                        // New messages received, scroll to bottom
+                        scroll_to_bottom();
+                        *previous_message_count.write() = new_count;
+                    }
                 }
             }
         });
