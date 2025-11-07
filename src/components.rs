@@ -155,10 +155,12 @@ pub fn ChatPage() -> Element {
                             Ok(()) => {
                                 if let Some((sk, pk, proc, _)) = identity() {
                                     let new_clock = current_clock + 1;
-                                    *identity.write() = Some((sk.clone(), pk.clone(), proc.clone(), new_clock));
-                                    // Save updated identity to storage
-                                    if let Err(e) = save_identity(&sk, &pk, &proc, new_clock) {
-                                        tracing::error!("Failed to save identity after post: {}", e);
+                                    *identity.write() = Some((sk, pk, proc, new_clock));
+                                    // Save updated identity to storage (re-read from signal)
+                                    if let Some((ref save_sk, ref save_pk, ref save_proc, save_clock)) = identity() {
+                                        if let Err(e) = save_identity(save_sk, save_pk, save_proc, save_clock) {
+                                            tracing::error!("Failed to save identity after post: {}", e);
+                                        }
                                     }
                                 }
                                 *message_input.write() = String::new();
@@ -300,10 +302,12 @@ rsx! {
                                                     Ok(()) => {
                                                         if let Some((sk, pk, proc, _)) = identity() {
                                                             let new_clock = current_clock + 1;
-                                                            *identity.write() = Some((sk.clone(), pk.clone(), proc.clone(), new_clock));
-                                                            // Save updated identity to storage
-                                                            if let Err(e) = save_identity(&sk, &pk, &proc, new_clock) {
-                                                                tracing::error!("Failed to save identity after post: {}", e);
+                                                            *identity.write() = Some((sk, pk, proc, new_clock));
+                                                            // Save updated identity to storage (re-read from signal)
+                                                            if let Some((ref save_sk, ref save_pk, ref save_proc, save_clock)) = identity() {
+                                                                if let Err(e) = save_identity(save_sk, save_pk, save_proc, save_clock) {
+                                                                    tracing::error!("Failed to save identity after post: {}", e);
+                                                                }
                                                             }
                                                         }
                                                         *message_input.write() = String::new();

@@ -198,15 +198,16 @@ pub fn save_identity(
     _process: &Process,
     _logical_clock: u64,
 ) -> Result<(), String> {
-    Err("Storage not available on non-WASM platforms".to_string())
+    Err("Identity persistence is not available on non-WASM platforms".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_identity() -> Result<Option<(SigningKey, PublicKey, Process, u64)>, String> {
+    tracing::warn!("Identity storage is not available on non-WASM platforms");
     Ok(None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn delete_identity() -> Result<(), String> {
-    Err("Storage not available on non-WASM platforms".to_string())
+    Err("Identity persistence is not available on non-WASM platforms".to_string())
 }
