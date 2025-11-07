@@ -4,6 +4,8 @@
 
 # HTML title tag content
 title = "tamichat"
+base_path = "wissotsky"
+out_dir = "docs"
 
 # include `assets` in web platform
 [web.resource]
