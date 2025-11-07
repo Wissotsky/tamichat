@@ -1,31 +1,486 @@
-/* Minimal styling for readability */
+/* =================================================================
+   TamiChat - Classic Web Design CSS
+   Inspired by Craigslist and early-2000s web aesthetic
+   ================================================================= */
+
+/* -----------------------------------------------------------------
+   1. BASE STYLES & RESET
+   ----------------------------------------------------------------- */
+* {
+    box-sizing: border-box;
+}
+
 body {
-    margin: 12px;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-    color: #111;
+    margin: 0;
+    padding: 20px;
+    font-family: times, serif;
+    font-size: 14px;
+    line-height: 1.4;
+    color: #000;
     background: #fff;
 }
 
-/* Container for each event/result */
-.item {
-    border: 1px solid #e6e6e6;
+a {
+    color: #00e;
+    text-decoration: underline;
+}
+
+a:visited {
+    color: #551a8b;
+}
+
+a:hover {
+    text-decoration: none;
+}
+
+h1, h2, h3, h4 {
+    font-weight: bold;
+    margin: 10px 0;
+}
+
+h1 { font-size: 24px; }
+h2 { font-size: 20px; }
+h3 { font-size: 16px; }
+h4 { font-size: 14px; }
+
+pre, code, .mono {
+    font-family: courier, monospace;
+    font-size: 13px;
+}
+
+/* -----------------------------------------------------------------
+   2. LAYOUT HELPERS
+   ----------------------------------------------------------------- */
+.container {
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+.section {
+    margin: 20px 0;
+    padding: 10px;
+    border: 1px solid #ccc;
+    background: #f8f8f8;
+}
+
+.box {
     padding: 8px;
     margin: 8px 0;
-    border-radius: 6px;
+    border: 1px solid #999;
+    background: #fff;
+}
+
+/* -----------------------------------------------------------------
+   3. FORMS & INPUTS
+   ----------------------------------------------------------------- */
+input[type="text"],
+textarea {
+    font-family: arial, sans-serif;
+    font-size: 13px;
+    padding: 4px;
+    border: 1px solid #999;
+    width: 100%;
+    background: #fff;
+}
+
+textarea {
+    font-family: courier, monospace;
+    resize: vertical;
+}
+
+input:focus,
+textarea:focus {
+    outline: 2px solid #00e;
+    outline-offset: 1px;
+}
+
+input:disabled,
+textarea:disabled {
+    background: #eee;
+    color: #666;
+}
+
+button,
+input[type="submit"] {
+    font-family: arial, sans-serif;
+    font-size: 13px;
+    padding: 6px 12px;
+    border: 1px solid #999;
+    background: #ddd;
+    cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+    background: #ccc;
+    border-color: #666;
+}
+
+button:disabled {
+    color: #999;
+    cursor: not-allowed;
+}
+
+button:active:not(:disabled) {
+    background: #bbb;
+}
+
+/* -----------------------------------------------------------------
+   4. CHAT PAGE
+   ----------------------------------------------------------------- */
+.chat-container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.chat-header {
+    padding: 10px;
+    border: 2px solid #000;
+    background: #eee;
+    margin-bottom: 15px;
+}
+
+.chat-header h1 {
+    margin: 0 0 5px 0;
+    font-size: 22px;
+}
+
+.chat-header p {
+    margin: 0;
+    font-size: 12px;
+    color: #666;
+}
+
+.status-indicator {
+    float: right;
+    font-size: 11px;
+    color: #060;
+}
+
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: #0c0;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+
+.chat-messages {
+    height: 400px;
+    overflow-y: scroll;
+    border: 1px solid #999;
+    padding: 10px;
+    background: #fff;
+    margin-bottom: 10px;
+}
+
+.message {
+    margin: 0 0 12px 0;
+    padding: 0;
+    border-bottom: 1px dotted #ccc;
+    padding-bottom: 8px;
+}
+
+.message:last-child {
+    border-bottom: none;
+}
+
+.message-content {
+    margin: 0 0 4px 0;
+}
+
+.message-meta {
+    font-size: 11px;
+    color: #666;
+}
+
+.message-time {
+    font-weight: bold;
+}
+
+.message-system {
+    font-family: courier, monospace;
+    font-size: 10px;
+}
+
+.chat-input-container {
+    border: 1px solid #999;
+    padding: 10px;
+    background: #f0f0f0;
+}
+
+.chat-input-wrapper {
+    display: block;
+}
+
+.chat-input {
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+.chat-send-btn {
+    display: block;
+    width: 100%;
+}
+
+.loading-indicator {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    font-style: italic;
+}
+
+.error-message {
+    background: #fcc;
+    border: 2px solid #c00;
+    padding: 8px;
+    margin: 10px 0;
+    color: #900;
+    font-weight: bold;
+}
+
+.sending-indicator {
+    background: #ffc;
+    border: 1px solid #cc9;
+    padding: 6px;
+    margin: 8px 0;
+    font-size: 12px;
+}
+
+/* -----------------------------------------------------------------
+   5. DEBUG & UTILITY PAGES
+   ----------------------------------------------------------------- */
+.debug-link {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    font-size: 11px;
+    padding: 4px 8px;
+    background: #ff9;
+    border: 1px solid #000;
+}
+
+.debug-container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.debug-nav {
+    margin: 10px 0 20px 0;
+    padding: 8px;
+    border: 2px solid #000;
+    background: #eee;
+}
+
+.debug-btn {
+    margin-right: 8px;
+}
+
+.debug-btn.active {
+    background: #000;
+    color: #fff;
+    border-color: #000;
+}
+
+.topic-query-section,
+.query-decoder-section,
+.identity-section,
+.username-section,
+.post-creation-section {
+    margin: 15px 0;
+    padding: 12px;
+    border: 1px solid #999;
+    background: #f8f8f8;
+}
+
+.topic-query-description,
+.help-text {
+    font-size: 12px;
+    color: #666;
+    margin: 5px 0;
+}
+
+.topic-query-input-wrapper,
+.username-input-wrapper {
+    margin: 8px 0;
+}
+
+.topic-query-input,
+.username-input,
+.topic-input {
+    margin-bottom: 6px;
+}
+
+/* Button variants inherit base button styles */
+
+.decoder-textarea,
+.post-textarea {
+    min-height: 100px;
+    margin-bottom: 8px;
+}
+
+.decoded-output,
+.created-post-display {
+    margin: 10px 0;
+    padding: 10px;
+    border: 1px solid #999;
+    background: #fff;
+}
+
+.decoded-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* -----------------------------------------------------------------
+   6. EVENT DISPLAY COMPONENTS
+   ----------------------------------------------------------------- */
+.event-item-border {
+    border: 1px solid #999;
+    margin: 10px 0;
+    padding: 8px;
     background: #fafafa;
 }
 
-/* Monospace for raw/protobuf bytes and small labels */
-.mono, pre, code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Segoe UI Mono", monospace;
-    font-size: 0.9em;
+.event-detail-bg {
+    padding: 6px;
+    margin: 4px 0;
+    background: #eee;
+    font-size: 12px;
+}
+
+.signature-span,
+.system-key-span,
+.process-key-span,
+.identity-key-span,
+.identity-process-span {
+    font-family: courier, monospace;
+    font-size: 11px;
+    word-break: break-all;
+}
+
+.post-content-box {
+    padding: 8px;
+    margin: 8px 0;
+    border-left: 3px solid #000;
+    background: #ffe;
+}
+
+.image-item {
+    margin-left: 20px;
+    font-size: 12px;
+}
+
+.raw-content-span {
+    font-family: courier, monospace;
+    font-size: 11px;
+}
+
+.moderation-tag {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 2px 4px;
+    background: #ddd;
+    border: 1px solid #999;
+    font-size: 11px;
+}
+
+.no-content-message {
+    font-style: italic;
+    color: #999;
+}
+
+.delete-details,
+.reference-details {
+    margin-left: 20px;
+    font-size: 12px;
+}
+
+.vouch-notice {
+    font-style: italic;
+    margin-left: 20px;
+}
+
+.raw-text-content {
+    font-family: courier, monospace;
+    background: #f5f5f5;
+    padding: 4px;
+}
+
+/* -----------------------------------------------------------------
+   7. IDENTITY & USERNAME DISPLAY
+   ----------------------------------------------------------------- */
+.identity-detail {
+    margin: 8px 0;
+    font-size: 12px;
+}
+
+.username-display {
+    margin: 10px 0;
+    padding: 8px;
+    background: #ffe;
+    border: 1px solid #cc9;
+}
+
+.username-value {
+    font-weight: bold;
+    color: #000;
+}
+
+/* -----------------------------------------------------------------
+   8. STATUS MESSAGES
+   ----------------------------------------------------------------- */
+.status-error {
+    padding: 10px;
+    margin: 10px 0;
+    background: #fcc;
+    border: 2px solid #c00;
+    color: #900;
+    font-weight: bold;
+}
+
+.status-success {
+    padding: 10px;
+    margin: 10px 0;
+    background: #cfc;
+    border: 2px solid #0c0;
+    color: #060;
+    font-weight: bold;
+}
+
+/* -----------------------------------------------------------------
+   9. FORM GROUPS
+   ----------------------------------------------------------------- */
+.form-group {
+    margin: 12px 0;
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 4px;
+    font-weight: bold;
+    font-size: 13px;
+}
+
+/* -----------------------------------------------------------------
+   10. MISCELLANEOUS
+   ----------------------------------------------------------------- */
+.create-post-container {
+    max-width: 800px;
+    margin: 0 auto;
 }
 
 .muted {
     color: #666;
-    font-size: 0.9em;
+    font-size: 12px;
 }
 
-/* Tiny helpers */
-.gap { margin-left: 12px; }
+/* Remove modern animations for classic feel */
+@media (prefers-reduced-motion: no-preference) {
+    * {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
 

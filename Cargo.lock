@@ -4709,6 +4709,7 @@ dependencies = [
  "dioxus",
  "ed25519-dalek",
  "getrandom 0.3.4",
+ "gloo-timers",
  "prost",
  "prost-build",
  "rand 0.9.2",
