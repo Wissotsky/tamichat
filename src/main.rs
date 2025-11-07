@@ -115,6 +115,53 @@ fn create_post(
     })
 }
 
+/// Create and sign a username event
+fn create_username(
+    signing_key: &SigningKey,
+    public_key: &PublicKey,
+    process: &Process,
+    logical_clock: u64,
+    username: String,
+) -> Result<SignedEvent, Box<dyn std::error::Error>> {
+    // Get current unix milliseconds using chrono (wasm-compatible)
+    let unix_milliseconds = Utc::now().timestamp_millis() as u64;
+    
+    // Create the Event with LWW Element for username
+    let event = tamichat::protocol::Event {
+        system: Some(public_key.clone()),
+        process: Some(process.clone()),
+        logical_clock,
+        content_type: 5, // Username
+        content: vec![],
+        vector_clock: Some(VectorClock {
+            logical_clocks: vec![],
+        }),
+        indices: Some(Indices {
+            indices: vec![],
+        }),
+        lww_element_set: None,
+        lww_element: Some(LwwElement {
+            value: username.as_bytes().to_vec(),
+            unix_milliseconds,
+        }),
+        references: vec![],
+        unix_milliseconds: Some(unix_milliseconds),
+    };
+    
+    // Encode the event
+    let mut event_bytes = Vec::new();
+    event.encode(&mut event_bytes)?;
+    
+    // Sign the event
+    let signature: Signature = signing_key.sign(&event_bytes);
+    
+    Ok(SignedEvent {
+        signature: signature.to_bytes().to_vec(),
+        event: event_bytes,
+        moderation_tags: vec![],
+    })
+}
+
 fn main() {
     dioxus::launch(App);
 }
@@ -161,6 +208,9 @@ fn DataFetcher() -> Element {
     let mut data_state = use_signal(|| None::<QueryReferencesResponse>);
     let mut error_state = use_signal(|| None::<String>);
     let mut loading = use_signal(|| false);
+    let mut decoder_input = use_signal(|| String::new());
+    let mut decoded_request = use_signal(|| None::<String>);
+    let mut topic_query = use_signal(|| String::new());
 
     let fetch_data = move |_| {
         spawn(async move {
@@ -178,10 +228,119 @@ fn DataFetcher() -> Element {
             *loading.write() = false;
         });
     };
+    
+    let fetch_topic = move |_| {
+        let topic = topic_query();
+        if topic.is_empty() {
+            *error_state.write() = Some("Error: Topic cannot be empty".to_string());
+            return;
+        }
+        
+        spawn(async move {
+            *loading.write() = true;
+            *error_state.write() = None;
+            
+            match fetch_topic_data(&topic).await {
+                Ok(response) => {
+                    *data_state.write() = Some(response);
+                }
+                Err(e) => {
+                    *error_state.write() = Some(format!("Error: {}", e));
+                }
+            }
+            *loading.write() = false;
+        });
+    };
+    
+    let decode_request = move |_| {
+        let input = decoder_input();
+        if input.is_empty() {
+            *decoded_request.write() = Some("Error: Input is empty".to_string());
+            return;
+        }
+        
+        match BASE64_URL_SAFE_NO_PAD.decode(input.as_bytes()) {
+            Ok(bytes) => {
+                match QueryReferencesRequest::decode(&bytes[..]) {
+                    Ok(request) => {
+                        *decoded_request.write() = Some(format_query_references_request(&request));
+                    }
+                    Err(e) => {
+                        *decoded_request.write() = Some(format!("Error decoding protobuf: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                *decoded_request.write() = Some(format!("Error decoding base64: {}", e));
+            }
+        }
+    };
 
     rsx! {
         div {
             h1 { "Polycentric Query References" }
+            
+            // Topic Query Section
+            div {
+                style: "margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f0f8ff;",
+                h2 { "Query by Topic" }
+                p {
+                    style: "color: #666; margin-bottom: 10px;",
+                    "Enter a topic name to fetch all posts tagged with that topic:"
+                }
+                
+                div {
+                    style: "display: flex; gap: 10px; align-items: center;",
+                    input {
+                        r#type: "text",
+                        value: "{topic_query}",
+                        oninput: move |evt| *topic_query.write() = evt.value(),
+                        placeholder: "Enter topic name (e.g., technology, music)",
+                        style: "flex: 1; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;",
+                    }
+                    button {
+                        onclick: fetch_topic,
+                        disabled: topic_query().is_empty() || loading(),
+                        style: "padding: 10px 20px; font-size: 14px; cursor: pointer; background-color: #007acc; color: white; border: none; border-radius: 4px;",
+                        if loading() { "Loading..." } else { "Fetch Topic" }
+                    }
+                }
+            }
+            
+            // Query Decoder Section
+            div {
+                style: "margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9;",
+                h2 { "Query Request Decoder" }
+                p {
+                    style: "color: #666; margin-bottom: 10px;",
+                    "Paste a base64 URL-safe encoded QueryReferencesRequest to decode and inspect it:"
+                }
+                
+                textarea {
+                    value: "{decoder_input}",
+                    oninput: move |evt| *decoder_input.write() = evt.value(),
+                    placeholder: "Paste base64 URL-safe encoded query here (e.g., CmYIAhJiCiQIARIg1agZt9hNnBew...)",
+                    style: "width: 100%; min-height: 80px; padding: 10px; font-size: 13px; font-family: monospace; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px;",
+                }
+                
+                button {
+                    onclick: decode_request,
+                    disabled: decoder_input().is_empty(),
+                    style: "padding: 8px 16px; font-size: 14px; cursor: pointer; background-color: #28a745; color: white; border: none; border-radius: 4px; margin-bottom: 10px;",
+                    "Decode Query"
+                }
+                
+                if let Some(ref decoded) = decoded_request() {
+                    div {
+                        style: "margin-top: 15px; padding: 15px; background-color: white; border: 1px solid #ccc; border-radius: 4px;",
+                        h3 { "Decoded Request:" }
+                        pre {
+                            style: "white-space: pre-wrap; word-wrap: break-word; font-size: 13px; font-family: monospace;",
+                            {decoded.clone()}
+                        }
+                    }
+                }
+            }
             
             button {
                 onclick: fetch_data,
@@ -586,6 +745,111 @@ fn ContentDisplay(content_type: u64, content: Vec<u8>) -> Element {
     }
 }
 
+/// Format a QueryReferencesRequest into a human-readable string
+fn format_query_references_request(request: &QueryReferencesRequest) -> String {
+    let mut output = String::new();
+    
+    // Format the reference
+    if let Some(ref reference) = request.reference {
+        output.push_str(&format!("Reference:\n"));
+        output.push_str(&format!("  Type: {}\n", reference.reference_type));
+        
+        // Try to decode the reference based on type
+        match reference.reference_type {
+            2 => {
+                // Pointer type
+                if let Ok(pointer) = Pointer::decode(&reference.reference[..]) {
+                    output.push_str("  Pointer:\n");
+                    if let Some(ref system) = pointer.system {
+                        output.push_str(&format!("    System: {}\n", BASE64_STANDARD.encode(&system.key)));
+                    }
+                    if let Some(ref process) = pointer.process {
+                        output.push_str(&format!("    Process: {}\n", BASE64_STANDARD.encode(&process.process)));
+                    }
+                    output.push_str(&format!("    Logical Clock: {}\n", pointer.logical_clock));
+                    if let Some(ref digest) = pointer.event_digest {
+                        output.push_str(&format!("    Digest Type: {}\n", digest.digest_type));
+                        output.push_str(&format!("    Digest: {}\n", BASE64_STANDARD.encode(&digest.digest)));
+                    }
+                } else {
+                    output.push_str(&format!("  Raw: {}\n", BASE64_STANDARD.encode(&reference.reference)));
+                }
+            },
+            3 => {
+                // Byte reference (topic)
+                if let Ok(topic) = String::from_utf8(reference.reference.clone()) {
+                    output.push_str(&format!("  Topic: \"{}\"\n", topic));
+                } else {
+                    output.push_str(&format!("  Bytes: {}\n", BASE64_STANDARD.encode(&reference.reference)));
+                }
+            },
+            _ => {
+                output.push_str(&format!("  Raw: {}\n", BASE64_STANDARD.encode(&reference.reference)));
+            }
+        }
+    }
+    
+    // Format cursor if present
+    if let Some(ref cursor) = request.cursor {
+        output.push_str(&format!("\nCursor: {}\n", BASE64_STANDARD.encode(cursor)));
+    }
+    
+    // Format request_events if present
+    if let Some(ref req_events) = request.request_events {
+        output.push_str("\nRequest Events:\n");
+        if let Some(from_type) = req_events.from_type {
+            output.push_str(&format!("  From Type: {}\n", from_type));
+        }
+        if !req_events.count_lww_element_references.is_empty() {
+            output.push_str(&format!("  Count LWW Element References: {}\n", req_events.count_lww_element_references.len()));
+        }
+        if !req_events.count_references.is_empty() {
+            output.push_str(&format!("  Count References: {}\n", req_events.count_references.len()));
+        }
+    }
+    
+    // Format count_lww_element_references
+    if !request.count_lww_element_references.is_empty() {
+        output.push_str(&format!("\nCount LWW Element References: {}\n", request.count_lww_element_references.len()));
+        for (i, lww_ref) in request.count_lww_element_references.iter().enumerate() {
+            output.push_str(&format!("  [{}]:\n", i));
+            if let Ok(value_str) = String::from_utf8(lww_ref.value.clone()) {
+                output.push_str(&format!("    Value: \"{}\"\n", value_str));
+            } else {
+                output.push_str(&format!("    Value: {}\n", BASE64_STANDARD.encode(&lww_ref.value)));
+            }
+            if let Some(from_type) = lww_ref.from_type {
+                output.push_str(&format!("    From Type: {}\n", from_type));
+            }
+        }
+    }
+    
+    // Format count_references
+    if !request.count_references.is_empty() {
+        output.push_str(&format!("\nCount References: {}\n", request.count_references.len()));
+        for (i, count_ref) in request.count_references.iter().enumerate() {
+            output.push_str(&format!("  [{}]:\n", i));
+            if let Some(from_type) = count_ref.from_type {
+                output.push_str(&format!("    From Type: {}\n", from_type));
+            }
+        }
+    }
+    
+    // Format extra_byte_references
+    if !request.extra_byte_references.is_empty() {
+        output.push_str(&format!("\nExtra Byte References: {}\n", request.extra_byte_references.len()));
+        for (i, bytes) in request.extra_byte_references.iter().enumerate() {
+            if let Ok(text) = String::from_utf8(bytes.clone()) {
+                output.push_str(&format!("  [{}]: \"{}\"\n", i, text));
+            } else {
+                output.push_str(&format!("  [{}]: {}\n", i, BASE64_STANDARD.encode(bytes)));
+            }
+        }
+    }
+    
+    output
+}
+
 async fn fetch_api_data() -> Result<QueryReferencesResponse, Box<dyn std::error::Error>> {
     let url = "https://serv1.polycentric.io/query_references?query=CmYIAhJiCiQIARIg1agZt9hNnBewSwAJ4b0HAzP5ujWZBLx43BE6nOYtuvgSEgoQSayWYqLjA0QDdZ3V_tkaWRgHIiQIARIgaWBgT3ALTZXnqqfRfLjAwJJUED_qYwofgA4X8nEhcHcaAggD&moderation_filters=[]";
     
@@ -593,6 +857,49 @@ async fn fetch_api_data() -> Result<QueryReferencesResponse, Box<dyn std::error:
     let protobuf_bytes = response.bytes().await?;
     
     // Parse the protobuf directly from the raw bytes
+    let query_response = QueryReferencesResponse::decode(&protobuf_bytes[..])?;
+    
+    Ok(query_response)
+}
+
+// Fetch posts by topic
+async fn fetch_topic_data(topic: &str) -> Result<QueryReferencesResponse, Box<dyn std::error::Error>> {
+    // Build the QueryReferencesRequest
+    let request = QueryReferencesRequest {
+        reference: Some(Reference {
+            reference_type: 3, // Byte reference type for topics
+            reference: topic.as_bytes().to_vec(),
+        }),
+        cursor: None,
+        request_events: Some(QueryReferencesRequestEvents {
+            from_type: Some(3), // Content type 3 = Post
+            count_lww_element_references: vec![],
+            count_references: vec![],
+        }),
+        count_lww_element_references: vec![],
+        count_references: vec![],
+        extra_byte_references: vec![],
+    };
+    
+    // Encode the request to protobuf
+    let mut request_bytes = Vec::new();
+    request.encode(&mut request_bytes)?;
+    
+    // Encode to base64 URL-safe
+    let encoded_query = BASE64_URL_SAFE_NO_PAD.encode(&request_bytes);
+    
+    // Build the URL
+    let url = format!(
+        "https://serv1.polycentric.io/query_references?query={}&moderation_filters=[]",
+        encoded_query
+    );
+    
+    tracing::info!("Fetching topic '{}' with URL: {}", topic, url);
+    
+    let response = reqwest::get(&url).await?;
+    let protobuf_bytes = response.bytes().await?;
+    
+    // Parse the protobuf response
     let query_response = QueryReferencesResponse::decode(&protobuf_bytes[..])?;
     
     Ok(query_response)
@@ -738,10 +1045,13 @@ fn CreatePostPage() -> Element {
     let mut identity = use_signal(|| None::<(SigningKey, PublicKey, Process)>);
     let mut post_content = use_signal(|| String::new());
     let mut topic = use_signal(|| String::new());
+    let mut username = use_signal(|| String::new());
+    let mut current_username = use_signal(|| None::<String>);
     let mut logical_clock = use_signal(|| 1u64);
     let mut status_message = use_signal(|| None::<String>);
     let mut created_post = use_signal(|| None::<SignedEvent>);
     let mut is_posting = use_signal(|| false);
+    let mut is_setting_username = use_signal(|| false);
     
     let create_identity = move |_| {
         let (signing_key, public_key) = generate_identity();
@@ -749,6 +1059,53 @@ fn CreatePostPage() -> Element {
         *identity.write() = Some((signing_key, public_key, process));
         *status_message.write() = Some("Identity created successfully!".to_string());
         *logical_clock.write() = 1;
+        *current_username.write() = None;
+    };
+    
+    let set_username = move |_| {
+        if let Some((ref signing_key, ref public_key, ref process)) = identity() {
+            let username_value = username();
+            
+            if username_value.is_empty() {
+                *status_message.write() = Some("Error: Username cannot be empty".to_string());
+                return;
+            }
+            
+            // Clone values for async block
+            let signing_key_clone = signing_key.clone();
+            let public_key_clone = public_key.clone();
+            let process_clone = process.clone();
+            let current_clock = logical_clock();
+            
+            spawn(async move {
+                *is_setting_username.write() = true;
+                *status_message.write() = Some("Setting username...".to_string());
+                
+                match create_username(&signing_key_clone, &public_key_clone, &process_clone, current_clock, username_value.clone()) {
+                    Ok(signed_event) => {
+                        // Try to post to server
+                        match post_events_to_server(signed_event.clone()).await {
+                            Ok(()) => {
+                                *current_username.write() = Some(username_value);
+                                *status_message.write() = Some(format!("Username set successfully! Logical clock: {}", current_clock));
+                                *logical_clock.write() = current_clock + 1;
+                                *username.write() = String::new();
+                            }
+                            Err(e) => {
+                                *status_message.write() = Some(format!("Error posting username to server: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        *status_message.write() = Some(format!("Error creating username event: {}", e));
+                    }
+                }
+                
+                *is_setting_username.write() = false;
+            });
+        } else {
+            *status_message.write() = Some("Error: Please create an identity first".to_string());
+        }
     };
     
     let submit_post = move |_| {
@@ -831,8 +1188,19 @@ fn CreatePostPage() -> Element {
                             }
                         }
                         div {
+                            style: "margin-bottom: 10px;",
                             strong { "Logical Clock: " }
                             span { "{logical_clock()}" }
+                        }
+                        if let Some(ref username_val) = current_username() {
+                            div {
+                                style: "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 4px;",
+                                strong { "Username: " }
+                                span { 
+                                    style: "font-size: 1.1em; color: #007acc;",
+                                    "{username_val}" 
+                                }
+                            }
                         }
                     }
                 } else {
@@ -842,6 +1210,39 @@ fn CreatePostPage() -> Element {
                             onclick: create_identity,
                             style: "padding: 10px 20px; font-size: 16px; cursor: pointer;",
                             "Generate Identity"
+                        }
+                    }
+                }
+            }
+            
+            // Username Section
+            if identity().is_some() {
+                div {
+                    style: "margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #fffef0;",
+                    h2 { "Set Username" }
+                    p {
+                        style: "color: #666; margin-bottom: 10px;",
+                        if current_username().is_some() {
+                            "Change your username (this will update your identity):"
+                        } else {
+                            "Set a username for your identity (recommended before posting):"
+                        }
+                    }
+                    
+                    div {
+                        style: "display: flex; gap: 10px; align-items: center;",
+                        input {
+                            r#type: "text",
+                            value: "{username}",
+                            oninput: move |evt| *username.write() = evt.value(),
+                            placeholder: "Enter your username",
+                            style: "flex: 1; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;",
+                        }
+                        button {
+                            onclick: set_username,
+                            disabled: username().is_empty() || is_setting_username(),
+                            style: "padding: 10px 20px; font-size: 14px; cursor: pointer; background-color: #ff9800; color: white; border: none; border-radius: 4px;",
+                            if is_setting_username() { "Setting..." } else { "Set Username" }
                         }
                     }
                 }
