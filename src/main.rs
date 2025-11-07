@@ -8,6 +8,7 @@ pub mod tamichat {
 
 mod api;
 mod components;
+mod storage;
 mod utils;
 
 use components::{ChatPage, DebugPages};

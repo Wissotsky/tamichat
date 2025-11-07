@@ -5,6 +5,7 @@ use ed25519_dalek::SigningKey;
 
 use crate::tamichat::protocol::*;
 use crate::api::*;
+use crate::storage::*;
 use crate::utils::*;
 
 #[derive(Clone, Debug)]
@@ -21,7 +22,7 @@ pub fn ChatPage() -> Element {
     let mut identity = use_signal(|| None::<(SigningKey, PublicKey, Process, u64)>);
     let mut is_sending = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    let mut show_scroll_button = use_signal(|| false);
+    let _show_scroll_button = use_signal(|| false);
     let mut previous_message_count = use_signal(|| 0usize);
     
     // Helper function to scroll chat to bottom
@@ -51,12 +52,39 @@ pub fn ChatPage() -> Element {
         ));
     });
     
-    // Auto-create identity on mount
+    // Auto-create or load identity on mount
     use_effect(move || {
         if identity().is_none() {
-            let (signing_key, public_key) = generate_identity();
-            let process = generate_process();
-            *identity.write() = Some((signing_key, public_key, process, 1));
+            spawn(async move {
+                // Try to load existing identity from storage
+                match load_identity() {
+                    Ok(Some((signing_key, public_key, process, clock))) => {
+                        tracing::info!("Loaded existing identity from storage");
+                        *identity.write() = Some((signing_key, public_key, process, clock));
+                    }
+                    Ok(None) => {
+                        // No saved identity, create a new one
+                        tracing::info!("Creating new identity");
+                        let (signing_key, public_key) = generate_identity();
+                        let process = generate_process();
+                        let clock = 1u64;
+                        
+                        // Save the new identity
+                        if let Err(e) = save_identity(&signing_key, &public_key, &process, clock) {
+                            tracing::error!("Failed to save identity: {}", e);
+                        }
+                        
+                        *identity.write() = Some((signing_key, public_key, process, clock));
+                    }
+                    Err(e) => {
+                        tracing::error!("Error loading identity: {}", e);
+                        // Fall back to creating a new identity
+                        let (signing_key, public_key) = generate_identity();
+                        let process = generate_process();
+                        *identity.write() = Some((signing_key, public_key, process, 1));
+                    }
+                }
+            });
         }
     });
     
@@ -126,7 +154,14 @@ pub fn ChatPage() -> Element {
                         match post_events_to_server(signed_event).await {
                             Ok(()) => {
                                 if let Some((sk, pk, proc, _)) = identity() {
-                                    *identity.write() = Some((sk, pk, proc, current_clock + 1));
+                                    let new_clock = current_clock + 1;
+                                    *identity.write() = Some((sk, pk, proc, new_clock));
+                                    // Save updated identity to storage (re-read from signal)
+                                    if let Some((ref save_sk, ref save_pk, ref save_proc, save_clock)) = identity() {
+                                        if let Err(e) = save_identity(save_sk, save_pk, save_proc, save_clock) {
+                                            tracing::error!("Failed to save identity after post: {}", e);
+                                        }
+                                    }
                                 }
                                 *message_input.write() = String::new();
                                 let _ = fetch_and_update_messages(&mut messages, &mut error).await;
@@ -266,7 +301,14 @@ rsx! {
                                                 match post_events_to_server(signed_event).await {
                                                     Ok(()) => {
                                                         if let Some((sk, pk, proc, _)) = identity() {
-                                                            *identity.write() = Some((sk, pk, proc, current_clock + 1));
+                                                            let new_clock = current_clock + 1;
+                                                            *identity.write() = Some((sk, pk, proc, new_clock));
+                                                            // Save updated identity to storage (re-read from signal)
+                                                            if let Some((ref save_sk, ref save_pk, ref save_proc, save_clock)) = identity() {
+                                                                if let Err(e) = save_identity(save_sk, save_pk, save_proc, save_clock) {
+                                                                    tracing::error!("Failed to save identity after post: {}", e);
+                                                                }
+                                                            }
                                                         }
                                                         *message_input.write() = String::new();
                                                         let _ = fetch_and_update_messages(&mut messages, &mut error).await;
@@ -378,12 +420,19 @@ pub fn DebugPages(on_back: EventHandler<()>) -> Element {
                     onclick: move |_| *current_page.write() = "create",
                     "Create Post"
                 }
+                " "
+                button {
+                    class: if current_page() == "account" { "debug-btn active" } else { "debug-btn" },
+                    onclick: move |_| *current_page.write() = "account",
+                    "Account"
+                }
             }
             
             match *current_page.read() {
                 "query" => rsx! { DataFetcher {} },
                 "explore" => rsx! { ExplorePage {} },
                 "create" => rsx! { CreatePostPage {} },
+                "account" => rsx! { AccountManagement {} },
                 _ => rsx! { DataFetcher {} },
             }
         }
@@ -1037,12 +1086,41 @@ pub fn CreatePostPage() -> Element {
     let mut is_posting = use_signal(|| false);
     let mut is_setting_username = use_signal(|| false);
     
+    // Load identity from storage on mount
+    use_effect(move || {
+        if identity().is_none() {
+            spawn(async move {
+                match load_identity() {
+                    Ok(Some((signing_key, public_key, process, clock))) => {
+                        tracing::info!("Loaded existing identity in CreatePostPage");
+                        *identity.write() = Some((signing_key, public_key, process));
+                        *logical_clock.write() = clock;
+                    }
+                    Ok(None) => {
+                        tracing::info!("No saved identity found in CreatePostPage");
+                    }
+                    Err(e) => {
+                        tracing::error!("Error loading identity in CreatePostPage: {}", e);
+                    }
+                }
+            });
+        }
+    });
+    
     let create_identity = move |_| {
         let (signing_key, public_key) = generate_identity();
         let process = generate_process();
+        let clock = 1u64;
+        
+        // Save the new identity
+        if let Err(e) = save_identity(&signing_key, &public_key, &process, clock) {
+            *status_message.write() = Some(format!("Error saving identity: {}", e));
+            return;
+        }
+        
         *identity.write() = Some((signing_key, public_key, process));
         *status_message.write() = Some("Identity created successfully!".to_string());
-        *logical_clock.write() = 1;
+        *logical_clock.write() = clock;
         *current_username.write() = None;
     };
     
@@ -1068,10 +1146,15 @@ pub fn CreatePostPage() -> Element {
                     Ok(signed_event) => {
                         match post_events_to_server(signed_event.clone()).await {
                             Ok(()) => {
+                                let new_clock = current_clock + 1;
                                 *current_username.write() = Some(username_value);
                                 *status_message.write() = Some(format!("Username set successfully! Logical clock: {}", current_clock));
-                                *logical_clock.write() = current_clock + 1;
+                                *logical_clock.write() = new_clock;
                                 *username.write() = String::new();
+                                // Save updated identity to storage
+                                if let Err(e) = save_identity(&signing_key_clone, &public_key_clone, &process_clone, new_clock) {
+                                    tracing::error!("Failed to save identity after username: {}", e);
+                                }
                             }
                             Err(e) => {
                                 *status_message.write() = Some(format!("Error posting username to server: {}", e));
@@ -1114,11 +1197,16 @@ pub fn CreatePostPage() -> Element {
                     Ok(signed_event) => {
                         match post_events_to_server(signed_event.clone()).await {
                             Ok(()) => {
+                                let new_clock = current_clock + 1;
                                 *created_post.write() = Some(signed_event.clone());
                                 *status_message.write() = Some(format!("Post created and published successfully! Logical clock: {}", current_clock));
-                                *logical_clock.write() = current_clock + 1;
+                                *logical_clock.write() = new_clock;
                                 *post_content.write() = String::new();
                                 *topic.write() = String::new();
+                                // Save updated identity to storage
+                                if let Err(e) = save_identity(&signing_key_clone, &public_key_clone, &process_clone, new_clock) {
+                                    tracing::error!("Failed to save identity after post: {}", e);
+                                }
                             }
                             Err(e) => {
                                 *status_message.write() = Some(format!("Error posting to server: {}", e));
@@ -1299,6 +1387,243 @@ pub fn CreatePostPage() -> Element {
                     class: "created-post-display",
                     h2 { "Last Created Post" }
                     SignedEventDisplay { event: post.clone() }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn AccountManagement() -> Element {
+    let mut identity = use_signal(|| None::<(SigningKey, PublicKey, Process, u64)>);
+    let mut status_message = use_signal(|| None::<String>);
+    let mut export_data = use_signal(|| None::<String>);
+    let mut import_input = use_signal(|| String::new());
+    let mut show_import = use_signal(|| false);
+    
+    // Load identity from storage on mount
+    use_effect(move || {
+        spawn(async move {
+            match load_identity() {
+                Ok(Some(loaded_identity)) => {
+                    tracing::info!("Loaded existing identity in AccountManagement");
+                    *identity.write() = Some(loaded_identity);
+                }
+                Ok(None) => {
+                    tracing::info!("No saved identity found in AccountManagement");
+                    *status_message.write() = Some("No identity found. Create one in the 'Create Post' page.".to_string());
+                }
+                Err(e) => {
+                    *status_message.write() = Some(format!("Error loading identity: {}", e));
+                }
+            }
+        });
+    });
+    
+    let delete_account = move |_| {
+        match delete_identity() {
+            Ok(()) => {
+                *identity.write() = None;
+                *status_message.write() = Some("Identity deleted successfully. Refresh the page to create a new one.".to_string());
+                *export_data.write() = None;
+            }
+            Err(e) => {
+                *status_message.write() = Some(format!("Error deleting identity: {}", e));
+            }
+        }
+    };
+    
+    let export_account = move |_| {
+        if let Some((ref signing_key, ref public_key, ref process, clock)) = identity() {
+            match export_identity_json(signing_key, public_key, process, clock) {
+                Ok(json) => {
+                    *export_data.write() = Some(json);
+                    *status_message.write() = Some("Identity exported! Copy the JSON below and save it securely.".to_string());
+                }
+                Err(e) => {
+                    *status_message.write() = Some(format!("Error exporting identity: {}", e));
+                }
+            }
+        } else {
+            *status_message.write() = Some("No identity to export.".to_string());
+        }
+    };
+    
+    let import_account = move |_| {
+        let json = import_input();
+        if json.trim().is_empty() {
+            *status_message.write() = Some("Error: Import data is empty".to_string());
+            return;
+        }
+        
+        match import_identity_json(&json) {
+            Ok((signing_key, public_key, process, clock)) => {
+                // Save to storage
+                match save_identity(&signing_key, &public_key, &process, clock) {
+                    Ok(()) => {
+                        *identity.write() = Some((signing_key, public_key, process, clock));
+                        *status_message.write() = Some("Identity imported successfully!".to_string());
+                        *import_input.write() = String::new();
+                        *show_import.write() = false;
+                        *export_data.write() = None;
+                    }
+                    Err(e) => {
+                        *status_message.write() = Some(format!("Error saving imported identity: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                *status_message.write() = Some(format!("Error importing identity: {}", e));
+            }
+        }
+    };
+    
+    rsx! {
+        div {
+            class: "container",
+            h1 { "Account Management" }
+            
+            if let Some(ref message) = status_message() {
+                p {
+                    class: if message.starts_with("Error") { "status-error" } else { "status-success" },
+                    {message.clone()}
+                }
+            }
+            
+            hr {}
+            
+            if let Some((_, ref public_key, ref process, clock)) = identity() {
+                div {
+                    class: "identity-info",
+                    h2 { "Current Identity" }
+                    
+                    div {
+                        class: "identity-detail",
+                        strong { "System (Public Key):" }
+                        br {}
+                        code {
+                            class: "identity-key-span",
+                            {BASE64_STANDARD.encode(&public_key.key)}
+                        }
+                    }
+                    
+                    div {
+                        class: "identity-detail",
+                        strong { "Process ID:" }
+                        br {}
+                        code {
+                            class: "identity-process-span",
+                            {BASE64_STANDARD.encode(&process.process)}
+                        }
+                    }
+                    
+                    div {
+                        class: "identity-detail",
+                        strong { "Logical Clock: " }
+                        "{clock}"
+                    }
+                    
+                    hr {}
+                    
+                    h2 { "Actions" }
+                    
+                    div {
+                        class: "account-actions",
+                        button {
+                            class: "export-btn",
+                            onclick: export_account,
+                            "Export Identity"
+                        }
+                        " "
+                        button {
+                            class: "import-toggle-btn",
+                            onclick: move |_| *show_import.write() = !show_import(),
+                            if show_import() { "Hide Import" } else { "Show Import" }
+                        }
+                        " "
+                        button {
+                            class: "delete-btn",
+                            onclick: delete_account,
+                            "Delete Identity"
+                        }
+                    }
+                    
+                    if let Some(ref json) = export_data() {
+                        div {
+                            class: "export-section",
+                            h3 { "Exported Identity Data" }
+                            p {
+                                class: "export-warning",
+                                "⚠️ Keep this data secure! Anyone with this JSON can impersonate your identity."
+                            }
+                            textarea {
+                                class: "export-textarea",
+                                readonly: true,
+                                value: "{json}",
+                                rows: 10,
+                            }
+                        }
+                    }
+                    
+                    if show_import() {
+                        div {
+                            class: "import-section",
+                            h3 { "Import Identity" }
+                            p {
+                                class: "import-warning",
+                                "⚠️ This will replace your current identity! Make sure you've exported your current identity first."
+                            }
+                            textarea {
+                                class: "import-textarea",
+                                value: "{import_input}",
+                                oninput: move |evt| *import_input.write() = evt.value(),
+                                placeholder: "Paste exported identity JSON here...",
+                                rows: 10,
+                            }
+                            br {}
+                            button {
+                                class: "import-btn",
+                                onclick: import_account,
+                                disabled: import_input().trim().is_empty(),
+                                "Import Identity"
+                            }
+                        }
+                    }
+                }
+            } else {
+                div {
+                    class: "no-identity",
+                    h2 { "No Identity Found" }
+                    p { "You don't have an identity yet. Go to the 'Create Post' page to create one, or import an existing identity below." }
+                    
+                    hr {}
+                    
+                    button {
+                        class: "import-toggle-btn",
+                        onclick: move |_| *show_import.write() = !show_import(),
+                        if show_import() { "Hide Import" } else { "Show Import" }
+                    }
+                    
+                    if show_import() {
+                        div {
+                            class: "import-section",
+                            h3 { "Import Identity" }
+                            textarea {
+                                class: "import-textarea",
+                                value: "{import_input}",
+                                oninput: move |evt| *import_input.write() = evt.value(),
+                                placeholder: "Paste exported identity JSON here...",
+                                rows: 10,
+                            }
+                            br {}
+                            button {
+                                class: "import-btn",
+                                onclick: import_account,
+                                disabled: import_input().trim().is_empty(),
+                                "Import Identity"
+                            }
+                        }
+                    }
                 }
             }
         }
